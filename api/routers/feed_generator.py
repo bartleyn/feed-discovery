@@ -1,18 +1,18 @@
 """
 GET /xrpc/app.bsky.feed.getFeed
 
-Phase 2: round-robin across all registered feeds, logs impressions + chunk_posts.
-Phase 3 will swap the ordering for Thompson Sampling.
+Calls all registered feeds in Thompson Sampling order, logs impressions +
+chunk_posts, and returns a flat post slate to bsky.app.
 """
 
 import logging
-import random
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from api.config import settings
+from bandit.thompson import rank_feeds
 from ingestion import atproto_client
 from store import get_db
 from store.models import Feed, Impression, ChunkPost
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["feed-generator"])
 
 
-@router.get("/xrpc/app.bsky.feed.getFeed")
+@router.get("/xrpc/app.bsky.feed.getFeedSkeleton")
 def get_feed(
     feed: str = Query(..., description="AT URI of the generator record (ignored in POC)"),
     limit: int = Query(30, ge=1, le=100),
@@ -32,12 +32,11 @@ def get_feed(
 
     feeds = db.query(Feed).order_by(Feed.display_name).all()
     if not feeds:
-        return {"feed": [], "cursor": None}
+        return {"feed": []}
 
-    # Shuffle so repeated calls don't always favour the same feed.
-    # Phase 3 replaces this with Thompson Sampling rank.
-    feed_order = feeds[:]
-    random.shuffle(feed_order)
+    ranked_uris = rank_feeds(user_did, [f.feed_uri for f in feeds], db)
+    feed_map = {f.feed_uri: f for f in feeds}
+    feed_order = [feed_map[uri] for uri in ranked_uris]
 
     slate: list[str] = []
     now = datetime.now(timezone.utc)
@@ -72,4 +71,4 @@ def get_feed(
         "getFeed: user=%s feeds=%d posts=%d",
         user_did, len(feed_order), len(feed_items),
     )
-    return {"feed": feed_items, "cursor": None}
+    return {"feed": feed_items}

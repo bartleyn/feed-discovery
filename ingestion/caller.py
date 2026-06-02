@@ -111,6 +111,73 @@ class ATProtoClient:
 
         return FeedChunk(feed_uri=feed_uri, posts=posts, fetched_at=now)
 
+    def get_actor_likes(
+        self, actor_did: str, since: datetime, until: datetime
+    ) -> list[tuple[str, datetime]]:
+        """
+        Return (post_uri, indexed_at) for likes the actor made between since and until.
+
+        Walks pages until indexed_at falls before `since` or we exhaust results.
+        Returns at most 200 likes (safety cap).
+        """
+        if self._client is None:
+            raise RuntimeError("ATProtoClient.login() must be called first")
+
+        results: list[tuple[str, datetime]] = []
+        cursor = None
+        while len(results) < 200:
+            try:
+                resp = self._client.app.bsky.feed.get_actor_likes(
+                    {"actor": actor_did, "limit": 50, **({"cursor": cursor} if cursor else {})}
+                )
+            except Exception as exc:
+                logger.warning("get_actor_likes failed for %s: %s", actor_did, exc)
+                break
+
+            for item in resp.feed:
+                try:
+                    indexed_at = datetime.fromisoformat(
+                        item.post.indexed_at.replace("Z", "+00:00")
+                    )
+                except Exception:
+                    continue
+                if indexed_at < since:
+                    return results
+                if indexed_at <= until:
+                    results.append((item.post.uri, indexed_at))
+
+            cursor = getattr(resp, "cursor", None)
+            if not cursor:
+                break
+
+        return results
+
+    def get_reposted_by(
+        self, post_uri: str, actor_did: str, before: datetime
+    ) -> list[tuple[str, datetime]]:
+        """
+        Return (post_uri, indexed_at) if actor_did reposted post_uri before `before`.
+
+        Checks up to the first 100 reposters (sufficient for POC).
+        """
+        if self._client is None:
+            raise RuntimeError("ATProtoClient.login() must be called first")
+
+        try:
+            resp = self._client.app.bsky.feed.get_reposted_by(
+                {"uri": post_uri, "limit": 100}
+            )
+        except Exception as exc:
+            logger.warning("get_reposted_by failed for %s: %s", post_uri, exc)
+            return []
+
+        for profile in resp.reposted_by:
+            if profile.did == actor_did:
+                # atproto SDK doesn't expose indexed_at on repost profiles;
+                # use `before` as a conservative timestamp.
+                return [(post_uri, before)]
+        return []
+
 
 # Module-level singleton — initialised at app startup
 atproto_client = ATProtoClient()

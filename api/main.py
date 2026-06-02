@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.config import settings
 from api.routers import feeds_router, well_known_router, feed_generator_router
 from api.schemas import HealthOut
+from bandit.reward import start_scheduler
 from ingestion import atproto_client
 from store import Base, engine
 
@@ -37,9 +38,12 @@ async def lifespan(app: FastAPI):
     settings.default_user_did = did
     logger.info("Ready. User DID: %s", did)
 
+    scheduler = start_scheduler()
+
     yield
 
     # --- Shutdown ---
+    scheduler.shutdown(wait=False)
     logger.info("Shutting down.")
 
 
