@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import settings
-from api.routers import feeds_router, well_known_router, feed_generator_router
+from api.routers import feeds_router, well_known_router, feed_generator_router, status_router
 from api.schemas import HealthOut
 from bandit.reward import start_scheduler
 from ingestion import atproto_client
@@ -64,6 +64,7 @@ app.add_middleware(
 app.include_router(feeds_router)
 app.include_router(well_known_router)
 app.include_router(feed_generator_router)
+app.include_router(status_router)
 
 
 @app.get("/health", response_model=HealthOut, tags=["meta"])
