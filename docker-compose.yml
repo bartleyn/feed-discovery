@@ -26,11 +26,14 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-feed}:${POSTGRES_PASSWORD:-feed}@db:5432/${POSTGRES_DB:-feed_discovery}
       ATPROTO_HANDLE: ${ATPROTO_HANDLE}
       ATPROTO_PASSWORD: ${ATPROTO_PASSWORD}
+      DEFAULT_USER_DID: ${DEFAULT_USER_DID}
+      FEED_GENERATOR_HOSTNAME: ${FEED_GENERATOR_HOSTNAME}
+      FEED_GENERATOR_DID: ${FEED_GENERATOR_DID}
     ports:
-      - "8000:8000"
+      - "8391:8391"
     volumes:
       - .:/app
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8391 --reload
 
 volumes:
   pgdata:
