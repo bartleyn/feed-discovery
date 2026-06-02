@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import settings
-from api.routers import feeds_router
+from api.routers import feeds_router, well_known_router, feed_generator_router
 from api.schemas import HealthOut
 from ingestion import atproto_client
 from store import Base, engine
@@ -58,6 +58,8 @@ app.add_middleware(
 )
 
 app.include_router(feeds_router)
+app.include_router(well_known_router)
+app.include_router(feed_generator_router)
 
 
 @app.get("/health", response_model=HealthOut, tags=["meta"])
@@ -72,6 +74,6 @@ def health():
 def root():
     return {
         "service": "feed-discovery",
-        "phase": 1,
+        "phase": 2,
         "docs": "/docs",
     }
