@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     feed_generator_hostname: str = "feeds.barn.city"
     feed_generator_did: str = "did:web:feeds.barn.city"
 
+    # How many feeds to call per getFeedSkeleton request
+    feeds_per_slate: int = 6
+
     # Chunk size — number of posts to pull from each feed
     chunk_size: int = 5
 

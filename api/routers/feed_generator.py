@@ -34,14 +34,15 @@ def get_feed(
     if not feeds:
         return {"feed": []}
 
+    # Rank all arms (cheap — just beta samples), then fetch only the top N
     ranked_uris = rank_feeds(user_did, [f.feed_uri for f in feeds], db)
     feed_map = {f.feed_uri: f for f in feeds}
-    feed_order = [feed_map[uri] for uri in ranked_uris]
+    top_feeds = [feed_map[uri] for uri in ranked_uris[:settings.feeds_per_slate]]
 
-    slate: list[str] = []
+    slate: list[dict] = []
     now = datetime.now(timezone.utc)
 
-    for feed_row in feed_order:
+    for feed_row in top_feeds:
         chunk = atproto_client.get_chunk(feed_row.feed_uri)
         if not chunk.posts:
             continue
@@ -53,7 +54,7 @@ def get_feed(
             posts_shown=len(chunk.posts),
         )
         db.add(impression)
-        db.flush()  # assigns impression.id
+        db.flush()
 
         for position, post in enumerate(chunk.posts):
             db.add(ChunkPost(
@@ -62,13 +63,12 @@ def get_feed(
                 post_age_seconds=post.age_seconds,
                 position=len(slate) + position,
             ))
-            slate.append(post.uri)
+            slate.append({"post": post.uri, "feedContext": feed_row.feed_uri})
 
     db.commit()
 
-    feed_items = [{"post": uri} for uri in slate[:limit]]
     logger.info(
-        "getFeed: user=%s feeds=%d posts=%d",
-        user_did, len(feed_order), len(feed_items),
+        "getFeed: user=%s top_feeds=%d posts=%d",
+        user_did, len(top_feeds), len(slate),
     )
-    return {"feed": feed_items}
+    return {"feed": slate[:limit]}
