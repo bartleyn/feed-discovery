@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-feed}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-feed}
+      POSTGRES_DB: ${POSTGRES_DB:-feed_discovery}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-feed}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-feed}:${POSTGRES_PASSWORD:-feed}@db:5432/${POSTGRES_DB:-feed_discovery}
+      ATPROTO_HANDLE: ${ATPROTO_HANDLE}
+      ATPROTO_PASSWORD: ${ATPROTO_PASSWORD}
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  pgdata:
