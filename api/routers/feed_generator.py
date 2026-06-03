@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from api.config import settings
 from bandit.thompson import rank_feeds
+from bot.section_poster import ensure_section_post
 from ingestion import atproto_client
 from store import get_db
 from store.models import Feed, Impression, ChunkPost
@@ -79,6 +80,10 @@ def get_feed(
                 position=len(slate) + position,
             ))
             slate.append({"post": post.uri, "feedContext": feed_row.feed_uri})
+
+        section_uri = ensure_section_post(feed_row, db)
+        if section_uri:
+            slate.append({"post": section_uri})
 
     db.commit()
 

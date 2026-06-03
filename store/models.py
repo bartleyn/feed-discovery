@@ -27,6 +27,9 @@ class Feed(Base):
     topic_tags   = Column(String, default="")        # comma-separated; simple for now
     added_at     = Column(DateTime, default=datetime.utcnow)
 
+    # AT URI of the bot's section post for this feed; populated on first serve
+    section_post_uri = Column(String, nullable=True)
+
     impressions  = relationship("Impression", back_populates="feed")
     arm_states   = relationship("ArmState", back_populates="feed")
 
