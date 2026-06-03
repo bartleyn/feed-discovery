@@ -7,6 +7,7 @@ on behalf of the authenticated user. Returns a structured chunk
 """
 
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -37,12 +38,17 @@ class FeedChunk:
     fetched_at: datetime
 
 
+_CHUNK_CACHE_TTL = 120  # seconds — how long a fetched chunk stays fresh
+
+
 class ATProtoClient:
     """Thin wrapper around the atproto Client, authenticated at init."""
 
     def __init__(self):
         self._client: Client | None = None
         self._did: str = ""
+        self._chunk_cache: dict[str, tuple[FeedChunk, datetime]] = {}
+        self._cache_lock = threading.Lock()
 
     def login(self) -> str:
         """Authenticate and return the resolved DID."""

@@ -11,6 +11,7 @@ bsky.app will start a fresh session on next pull.
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
@@ -58,8 +59,14 @@ def get_feed(
     slate: list[dict] = []
     now = datetime.now(timezone.utc)
 
-    for feed_row in page_feeds:
-        chunk = atproto_client.get_chunk(feed_row.feed_uri)
+    # Fetch all feed chunks in parallel — each call is a separate HTTP round trip
+    # to Bluesky's API, so serial execution multiplies latency by feeds_per_slate.
+    with ThreadPoolExecutor(max_workers=len(page_feeds)) as pool:
+        chunks = list(pool.map(
+            lambda f: atproto_client.get_chunk(f.feed_uri), page_feeds
+        ))
+
+    for feed_row, chunk in zip(page_feeds, chunks):
         if not chunk.posts:
             continue
 
