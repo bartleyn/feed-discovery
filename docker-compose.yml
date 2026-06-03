@@ -33,6 +33,7 @@ services:
       - "8391:8391"
     volumes:
       - .:/app
+      - /Users/nathanbartley/Documents/personal_dev/github/atproto-health/jetstream-activity.db:/data/jetstream-activity.db:ro
     command: uvicorn api.main:app --host 0.0.0.0 --port 8391 --reload
 
 volumes:

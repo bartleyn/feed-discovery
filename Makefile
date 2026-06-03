@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate seed test-chunk
+.PHONY: up down logs migrate seed test-chunk sync-feeds
 
 # Start all services
 up:
@@ -26,4 +26,8 @@ seed:
 
 # Quick smoke test — fetch a raw chunk from What's Hot
 test-chunk:
-	curl -s "http://localhost:8000/feeds/at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot/chunk" | python3 -m json.tool
+	curl -s "http://localhost:8391/feeds/at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot/chunk" | python3 -m json.tool
+
+# Sync feeds from jetstream-activity.db (MIN_LIKES=5 by default)
+sync-feeds:
+	docker compose exec -e MIN_LIKES=$(or $(MIN_LIKES),5) api python -m scripts.sync_feeds

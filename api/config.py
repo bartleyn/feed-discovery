@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     feed_generator_hostname: str = "feeds.barn.city"
     feed_generator_did: str = "did:web:feeds.barn.city"
 
+    # Bot account — posts section tweets between feed chunks
+    bot_handle: str = ""
+    bot_password: str = ""
+
     # How many feeds to call per getFeedSkeleton request
     feeds_per_slate: int = 6
 
@@ -24,7 +28,7 @@ class Settings(BaseSettings):
     chunk_size: int = 5
 
     # Reward window in minutes — how long after impression to collect interactions
-    reward_window_minutes: int = 30
+    reward_window_minutes: int = 5
 
 
 settings = Settings()
