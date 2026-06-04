@@ -8,11 +8,15 @@ on behalf of the authenticated user. Returns a structured chunk
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+import httpx
 from atproto import Client
+from atproto_identity.did.resolver import DidResolver
+
 from api.config import settings
+from api.service_auth import create_service_jwt
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PostSummary:
     uri: str
-    cid: str
-    author_did: str
-    author_handle: str
-    text: str
-    created_at: datetime
-    age_seconds: int
-    like_count: int
-    repost_count: int
-    reply_count: int
+    age_seconds: int = 0
 
 
 @dataclass
@@ -40,6 +36,8 @@ class FeedChunk:
 
 _CHUNK_CACHE_TTL = 120  # seconds — how long a fetched chunk stays fresh
 
+_did_resolver = DidResolver()
+
 
 class ATProtoClient:
     """Thin wrapper around the atproto Client, authenticated at init."""
@@ -49,6 +47,8 @@ class ATProtoClient:
         self._did: str = ""
         self._chunk_cache: dict[str, tuple[FeedChunk, datetime]] = {}
         self._cache_lock = threading.Lock()
+        # (feed_uri) -> (generator_did, skeleton_endpoint_url)
+        self._generator_cache: dict[str, tuple[str, str]] = {}
 
     def login(self) -> str:
         """Authenticate and return the resolved DID."""
@@ -62,16 +62,37 @@ class ATProtoClient:
     def did(self) -> str:
         return self._did
 
-    def get_chunk(self, feed_uri: str, limit: int | None = None) -> FeedChunk:
-        """
-        Fetch the top `limit` posts from a feed generator.
+    def _resolve_generator(self, feed_uri: str) -> tuple[str, str]:
+        """Return (generator_did, skeleton_url) for a feed URI, with caching."""
+        if feed_uri in self._generator_cache:
+            return self._generator_cache[feed_uri]
 
-        Args:
-            feed_uri: Full AT URI, e.g. at://did:plc:.../app.bsky.feed.generator/whats-hot
-            limit:    Number of posts to fetch. Defaults to settings.chunk_size.
+        resp = self._client.app.bsky.feed.get_feed_generator({"feed": feed_uri})
+        generator_did = resp.view.did
 
-        Returns:
-            FeedChunk with parsed PostSummary objects.
+        did_doc = _did_resolver.resolve_without_validation(generator_did)
+        if not did_doc:
+            raise ValueError(f"Could not resolve DID document for {generator_did}")
+
+        endpoint = None
+        for svc in did_doc.get("service", []):
+            if svc.get("id") in ("#bsky_fg", f"{generator_did}#bsky_fg"):
+                endpoint = svc["serviceEndpoint"]
+                break
+
+        if not endpoint:
+            raise ValueError(f"No #bsky_fg service in DID doc for {generator_did}")
+
+        skeleton_url = f"{endpoint.rstrip('/')}/xrpc/app.bsky.feed.getFeedSkeleton"
+        self._generator_cache[feed_uri] = (generator_did, skeleton_url)
+        return generator_did, skeleton_url
+
+    def get_chunk(self, feed_uri: str, limit: int | None = None, user_did: str | None = None) -> FeedChunk:
+        """Fetch posts from a feed generator by calling getFeedSkeleton directly.
+
+        Calls the generator's own endpoint rather than routing through the AppView,
+        so personalized feeds receive the requesting user's DID (via JWT sub claim)
+        instead of the service account's.
         """
         if self._client is None:
             raise RuntimeError("ATProtoClient.login() must be called before get_chunk()")
@@ -79,47 +100,22 @@ class ATProtoClient:
         n = limit or settings.chunk_size
         now = datetime.now(timezone.utc)
 
-        # Request 2× what we need — the AppView filters posts after hydration
-        # (deleted posts, blocked accounts, preference filters), so asking for
-        # exactly n often returns fewer than n.
-        fetch_limit = min(n * 2, 100)
-
         try:
-            response = self._client.app.bsky.feed.get_feed({"feed": feed_uri, "limit": fetch_limit})
+            generator_did, skeleton_url = self._resolve_generator(feed_uri)
+            token = create_service_jwt(aud=generator_did, sub=user_did)
+            response = httpx.get(
+                skeleton_url,
+                params={"feed": feed_uri, "limit": n},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            items = response.json().get("feed", [])
         except Exception as exc:
-            logger.warning("Failed to fetch feed %s: %s", feed_uri, exc)
+            logger.warning("Failed to fetch skeleton for %s: %s", feed_uri, exc)
             return FeedChunk(feed_uri=feed_uri, posts=[], fetched_at=now)
 
-        posts: list[PostSummary] = []
-        for item in response.feed[:n]:
-            post = item.post
-            record = post.record
-
-            try:
-                created_at = datetime.fromisoformat(
-                    record.created_at.replace("Z", "+00:00")
-                )
-            except Exception:
-                created_at = now
-
-            age_seconds = int((now - created_at).total_seconds())
-            text = getattr(record, "text", "") or ""
-
-            counts = post.like_count or 0, post.repost_count or 0, post.reply_count or 0
-
-            posts.append(PostSummary(
-                uri=post.uri,
-                cid=post.cid,
-                author_did=post.author.did,
-                author_handle=post.author.handle,
-                text=text[:280],   # truncate for storage
-                created_at=created_at,
-                age_seconds=age_seconds,
-                like_count=counts[0],
-                repost_count=counts[1],
-                reply_count=counts[2],
-            ))
-
+        posts = [PostSummary(uri=item["post"]) for item in items[:n] if "post" in item]
         return FeedChunk(feed_uri=feed_uri, posts=posts, fetched_at=now)
 
     def get_actor_likes(

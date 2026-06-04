@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     bot_handle: str = ""
     bot_password: str = ""
 
+    # Signing key for service-to-service JWTs (hex-encoded secp256k1 private key)
+    feed_generator_signing_key: str = ""
+    # Corresponding public key in multibase format — added to the DID document
+    feed_generator_public_key_multibase: str = ""
+
     # How many feeds to call per getFeedSkeleton request
     feeds_per_slate: int = 6
 

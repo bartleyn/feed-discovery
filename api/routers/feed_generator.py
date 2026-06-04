@@ -72,7 +72,7 @@ def get_feed(
     # to Bluesky's API, so serial execution multiplies latency by feeds_per_slate.
     with ThreadPoolExecutor(max_workers=len(page_feeds)) as pool:
         chunks = list(pool.map(
-            lambda f: atproto_client.get_chunk(f.feed_uri), page_feeds
+            lambda f: atproto_client.get_chunk(f.feed_uri, user_did=user_did), page_feeds
         ))
 
     for feed_row, chunk in zip(page_feeds, chunks):
