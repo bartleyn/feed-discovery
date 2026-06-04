@@ -79,8 +79,13 @@ class ATProtoClient:
         n = limit or settings.chunk_size
         now = datetime.now(timezone.utc)
 
+        # Request 2× what we need — the AppView filters posts after hydration
+        # (deleted posts, blocked accounts, preference filters), so asking for
+        # exactly n often returns fewer than n.
+        fetch_limit = min(n * 2, 100)
+
         try:
-            response = self._client.app.bsky.feed.get_feed({"feed": feed_uri, "limit": n})
+            response = self._client.app.bsky.feed.get_feed({"feed": feed_uri, "limit": fetch_limit})
         except Exception as exc:
             logger.warning("Failed to fetch feed %s: %s", feed_uri, exc)
             return FeedChunk(feed_uri=feed_uri, posts=[], fetched_at=now)
