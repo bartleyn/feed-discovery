@@ -14,9 +14,10 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from api.auth import verify_service_jwt
 from api.config import settings
 from bandit.thompson import rank_feeds
 from bot.section_poster import ensure_section_post
@@ -35,9 +36,17 @@ def get_feed(
     feed: str = Query(..., description="AT URI of the generator record (ignored in POC)"),
     limit: int = Query(30, ge=1, le=100),
     cursor: str | None = Query(None),
+    authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    user_did = settings.default_user_did
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ")
+        try:
+            user_did = verify_service_jwt(token, settings.feed_generator_did)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+    else:
+        user_did = settings.default_user_did
 
     feeds = db.query(Feed).all()
     if not feeds:
