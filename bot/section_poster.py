@@ -113,6 +113,20 @@ def _compose_section_text(feed: Feed) -> str:
     return "\n".join(lines)
 
 
+# URIs verified reachable in this process lifetime — avoids a Bluesky round-trip
+# on every impression while still catching posts that were deleted after server start.
+_verified_section_uris: set[str] = set()
+
+
+def _post_still_exists(uri: str, client: Client) -> bool:
+    try:
+        resp = client.app.bsky.feed.get_posts({"uris": [uri]})
+        return bool(resp.posts)
+    except Exception as exc:
+        logger.debug("Could not verify section post %s: %s", uri, exc)
+        return True  # assume valid when the check itself fails
+
+
 @lru_cache(maxsize=1)
 def _get_bot_client() -> Client:
     if not settings.bot_handle or not settings.bot_password:
@@ -148,7 +162,28 @@ def ensure_section_post(feed: Feed, db) -> str | None:
     Returns None if bot credentials are not configured (non-fatal).
     """
     if feed.section_post_uri:
-        return feed.section_post_uri
+        if feed.section_post_uri not in _verified_section_uris:
+            if settings.bot_handle and settings.bot_password:
+                try:
+                    client = _get_bot_client()
+                    if _post_still_exists(feed.section_post_uri, client):
+                        _verified_section_uris.add(feed.section_post_uri)
+                    else:
+                        logger.warning(
+                            "Section post %s for feed %s no longer exists — clearing and recreating",
+                            feed.section_post_uri,
+                            feed.feed_uri,
+                        )
+                        feed.section_post_uri = None
+                        db.add(feed)
+                        db.commit()
+                except Exception as exc:
+                    logger.debug("Section post verification failed for %s: %s", feed.section_post_uri, exc)
+                    _verified_section_uris.add(feed.section_post_uri)
+            else:
+                _verified_section_uris.add(feed.section_post_uri)
+        if feed.section_post_uri:
+            return feed.section_post_uri
 
     if not settings.bot_handle or not settings.bot_password:
         logger.debug("Bot credentials not set — skipping section post for %s", feed.feed_uri)
