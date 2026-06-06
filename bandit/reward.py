@@ -74,8 +74,25 @@ def process_due_impressions() -> None:
 
 
 def start_scheduler() -> BackgroundScheduler:
+    from api.config import settings
+    from ingestion.feed_health import check_all_feeds
+
     scheduler = BackgroundScheduler()
     scheduler.add_job(process_due_impressions, "interval", minutes=1, id="reward_poll")
+
+    if settings.feed_health_interval_hours > 0:
+        scheduler.add_job(
+            check_all_feeds,
+            "interval",
+            hours=settings.feed_health_interval_hours,
+            id="feed_health",
+            next_run_time=datetime.now(timezone.utc),  # run once at startup too
+        )
+        logger.info(
+            "Feed health scheduler started (interval: %dh)",
+            settings.feed_health_interval_hours,
+        )
+
     scheduler.start()
     logger.info("Reward scheduler started (poll interval: 1 min)")
     return scheduler

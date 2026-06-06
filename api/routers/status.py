@@ -133,22 +133,36 @@ def _global_view(db: Session) -> HTMLResponse:
     </table>"""
 
     # Feed registry
+    from api.config import settings as cfg
     feeds = db.query(Feed).order_by(Feed.display_name).all()
     feed_rows = ""
     for f in feeds:
         section = f'<span class="reward-hi">✓</span>' if f.section_post_uri else '<span class="dim">—</span>'
         tags = f.topic_tags or ""
+        failures = f.consecutive_failures or 0
+        threshold = cfg.feed_health_failure_threshold
+        if f.last_checked_at is None:
+            health_cell = '<span class="dim">unchecked</span>'
+        elif failures == 0:
+            health_cell = '<span class="reward-hi">ok</span>'
+        elif failures < threshold:
+            health_cell = f'<span style="color:#c8a050">{failures} failure{"s" if failures != 1 else ""}</span>'
+        else:
+            health_cell = f'<span class="reward-lo">unhealthy ({failures})</span>'
+        checked = f.last_checked_at.strftime("%m-%d %H:%M") if f.last_checked_at else "—"
         feed_rows += f"""<tr>
           <td>{f.display_name}</td>
           <td class="dim" style="font-size:11px">{tags}</td>
           <td style="text-align:center">{section}</td>
+          <td>{health_cell}</td>
+          <td class="dim">{checked}</td>
         </tr>"""
 
     feeds_section = f"""
     <h2>Feed Registry ({total_feeds})</h2>
     <table>
-      <tr><th>Name</th><th>Tags</th><th>Section post</th></tr>
-      {feed_rows if feed_rows else '<tr><td colspan="3" class="dim">No feeds.</td></tr>'}
+      <tr><th>Name</th><th>Tags</th><th>Section post</th><th>Health</th><th>Last checked</th></tr>
+      {feed_rows if feed_rows else '<tr><td colspan="5" class="dim">No feeds.</td></tr>'}
     </table>"""
 
     return HTMLResponse(_html("Feed Discovery — Status", summary + users_section + feeds_section))

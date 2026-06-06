@@ -30,6 +30,10 @@ class Feed(Base):
     # AT URI of the bot's section post for this feed; populated on first serve
     section_post_uri = Column(String, nullable=True)
 
+    # Health tracking — updated by periodic feed health checks
+    last_checked_at      = Column(DateTime, nullable=True)
+    consecutive_failures = Column(Integer, default=0, nullable=False, server_default="0")
+
     impressions  = relationship("Impression", back_populates="feed")
     arm_states   = relationship("ArmState", back_populates="feed")
 

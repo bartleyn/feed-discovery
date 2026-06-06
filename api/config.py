@@ -35,5 +35,11 @@ class Settings(BaseSettings):
     # Reward window in minutes — how long after impression to collect interactions
     reward_window_minutes: int = 5
 
+    # How often to health-check feeds (hours); 0 disables
+    feed_health_interval_hours: int = 0
+
+    # Consecutive failures before a feed is flagged as unhealthy in status
+    feed_health_failure_threshold: int = 3
+
 
 settings = Settings()
