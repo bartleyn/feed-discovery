@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from api.auth import verify_service_jwt
 from api.config import settings
 from bandit.thompson import rank_feeds, update_arm
+from bot.intro_post import ensure_intro_post
 from bot.section_poster import ensure_section_post
 from ingestion import atproto_client
 from store import get_db
@@ -57,16 +58,21 @@ def get_feed(
     seen_uris: set[str] = set(cursor.split(CURSOR_SEP)) if cursor else set()
 
     feed_map = {f.feed_uri: f for f in feeds}
-    all_uris = [f.feed_uri for f in feeds]
 
     slate: list[dict] = []
+
+    # First page only: one intro post at the top describing what this feed is.
+    if cursor is None:
+        intro_uri = ensure_intro_post(db)
+        if intro_uri:
+            slate.append({"post": intro_uri, "feedContext": feed})
     now = datetime.now(timezone.utc)
     tried_uris: list[str] = []
     batch_limit = 4  # max batches per request to bound latency on pathological cases
 
     for _batch in range(batch_limit):
         # Re-rank each batch so empty-penalty updates from this request take effect
-        ranked_uris = rank_feeds(user_did, all_uris, db)
+        ranked_uris = rank_feeds(user_did, feeds, db)
         candidates = [feed_map[uri] for uri in ranked_uris if uri not in seen_uris]
         if not candidates:
             break

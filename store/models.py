@@ -8,7 +8,7 @@ even though v1 is single-user.
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Integer, Float, DateTime, Text,
-    ForeignKey, UniqueConstraint, func,
+    CheckConstraint, ForeignKey, UniqueConstraint, func,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -29,6 +29,10 @@ class Feed(Base):
 
     # AT URI of the bot's section post for this feed; populated on first serve
     section_post_uri = Column(String, nullable=True)
+
+    # Multiplier applied to the Thompson sample before ranking (0–1).
+    # Set < 1.0 for feeds marked Archived or Inactive.
+    priority_boost = Column(Float, default=1.0, nullable=False, server_default="1.0")
 
     # Health tracking — updated by periodic feed health checks
     last_checked_at      = Column(DateTime, nullable=True)
@@ -101,3 +105,12 @@ class ArmState(Base):
     last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     feed         = relationship("Feed", back_populates="arm_states")
+
+
+class BotConfig(Base):
+    """Single-row config for the bot account. id is always 1."""
+    __tablename__ = "bot_config"
+    __table_args__ = (CheckConstraint("id = 1"),)
+
+    id             = Column(Integer, primary_key=True, default=1)
+    intro_post_uri = Column(String, nullable=True)   # created once, reused forever
