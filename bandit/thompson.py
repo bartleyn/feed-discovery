@@ -10,7 +10,7 @@ import numpy as np
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
-from store.models import ArmState
+from store.models import ArmState, Feed
 
 
 def get_or_init_arm(user_did: str, feed_uri: str, db: Session) -> ArmState:
@@ -32,12 +32,13 @@ def get_or_init_arm(user_did: str, feed_uri: str, db: Session) -> ArmState:
     return arm
 
 
-def rank_feeds(user_did: str, feed_uris: list[str], db: Session) -> list[str]:
-    """Return feed_uris sorted by descending Thompson sample."""
+def rank_feeds(user_did: str, feeds: list[Feed], db: Session) -> list[str]:
+    """Return feed URIs sorted by descending Thompson sample × priority_boost."""
     scores: list[tuple[str, float]] = []
-    for uri in feed_uris:
-        arm = get_or_init_arm(user_did, uri, db)
-        scores.append((uri, float(np.random.beta(arm.alpha, arm.beta))))
+    for feed in feeds:
+        arm = get_or_init_arm(user_did, feed.feed_uri, db)
+        sample = float(np.random.beta(arm.alpha, arm.beta)) * feed.priority_boost
+        scores.append((feed.feed_uri, sample))
     scores.sort(key=lambda x: -x[1])
     return [uri for uri, _ in scores]
 

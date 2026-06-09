@@ -10,8 +10,10 @@ and bootstraps arm states for the default user.
 """
 
 import os
+import re
 import sqlite3
 import sys
+from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from store.database import SessionLocal
@@ -22,6 +24,18 @@ JETSTREAM_DB = os.environ.get(
 )
 MIN_LIKES = int(os.environ.get("MIN_LIKES", "5"))
 DEFAULT_USER_DID = os.environ.get("DEFAULT_USER_DID", "")
+
+_CURRENT_YEAR = datetime.now(timezone.utc).year
+
+
+def compute_priority_boost(display_name: str, description: str) -> float:
+    text = f"{display_name} {description}".lower()
+    if "archived" in text or "inactive" in text:
+        return 0.1
+    years = {int(y) for y in re.findall(r'\b(20\d{2})\b', text)}
+    if any(y < _CURRENT_YEAR for y in years):
+        return 0.3
+    return 1.0
 
 
 def sync():
@@ -51,23 +65,34 @@ def sync():
 
     db = SessionLocal()
     try:
-        added = skipped = 0
+        added = skipped = downranked = 0
 
         for row in candidates:
-            if db.get(Feed, row["uri"]):
+            name = row["display_name"] or row["uri"]
+            desc = row["description"] or ""
+            boost = compute_priority_boost(name, desc)
+
+            existing = db.get(Feed, row["uri"])
+            if existing:
+                if existing.priority_boost != boost:
+                    existing.priority_boost = boost
+                    downranked += 1
                 skipped += 1
                 continue
+
             db.add(Feed(
                 feed_uri=row["uri"],
-                display_name=row["display_name"] or row["uri"],
-                description=row["description"] or "",
+                display_name=name,
+                description=desc,
                 topic_tags="",
+                priority_boost=boost,
             ))
             added += 1
-            print(f"  + [{row['total_likes']:>5} likes] {row['display_name']}")
+            flag = " [DOWNRANKED]" if boost < 1.0 else ""
+            print(f"  + [{row['total_likes']:>5} likes] {name}{flag}")
 
         db.commit()
-        print(f"\nAdded {added} new feed(s), skipped {skipped} already in registry.")
+        print(f"\nAdded {added} new feed(s), skipped {skipped} already in registry, updated priority_boost on {downranked}.")
 
         if DEFAULT_USER_DID:
             all_feeds = db.query(Feed).all()
