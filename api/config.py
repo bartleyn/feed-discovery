@@ -41,5 +41,8 @@ class Settings(BaseSettings):
     # Consecutive failures before a feed is flagged as unhealthy in status
     feed_health_failure_threshold: int = 3
 
+    # Password for the /status admin page (HTTP Basic Auth). Empty = no auth.
+    status_password: str = ""
+
 
 settings = Settings()

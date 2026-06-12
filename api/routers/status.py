@@ -1,19 +1,49 @@
 """
-GET /status — human-readable observability page.
+GET /status — human-readable observability page (password-protected).
 
-Global view: per-user summary table, system totals.
+Global view: per-user summary table, system totals, feed registry with
+inline priority_boost editor.
 Per-user view (?user=<did>): arm rankings, feed performance, recent impressions.
+
+Set STATUS_PASSWORD in .env to require HTTP Basic Auth.
 """
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import HTMLResponse
+import base64
+import secrets
+
+from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from api.config import settings
 from store import get_db
 from store.models import ArmState, Feed, Impression
 
 router = APIRouter(tags=["status"])
+
+
+def _check_auth(request: Request) -> bool:
+    """Return True if request passes Basic Auth (or no password is configured)."""
+    if not settings.status_password:
+        return True
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(auth[6:]).decode()
+        _, _, password = decoded.partition(":")
+        return secrets.compare_digest(password, settings.status_password)
+    except Exception:
+        return False
+
+
+def _auth_required() -> Response:
+    return Response(
+        content="Unauthorized",
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Feed Discovery"'},
+    )
 
 _CSS = """
 body { font-family: monospace; max-width: 1100px; margin: 40px auto; padding: 0 20px; background: #0f0f0f; color: #e0e0e0; }
@@ -35,6 +65,15 @@ td { padding: 4px 8px; border-bottom: 1px solid #222; vertical-align: middle; }
 .stat-val { font-size: 24px; color: #7eb8f7; }
 .stat-lbl { font-size: 11px; color: #666; }
 .back { font-size: 12px; color: #555; margin-bottom: 20px; }
+.boost-form { display: flex; align-items: center; gap: 4px; }
+.boost-form input[type=number] { width: 54px; background: #1a1a1a; border: 1px solid #444; color: #e0e0e0;
+  padding: 2px 4px; border-radius: 2px; font-family: monospace; font-size: 12px; }
+.boost-form button { background: #2a3a4a; border: 1px solid #4a6a8a; color: #7eb8f7;
+  padding: 2px 8px; border-radius: 2px; cursor: pointer; font-size: 11px; }
+.boost-form button:hover { background: #3a4a5a; }
+.boost-zero { color: #b87e7e; }
+.boost-low  { color: #c8a050; }
+.boost-full { color: #7eb87e; }
 """
 
 
@@ -69,12 +108,31 @@ def _short_did(did: str) -> str:
 
 @router.get("/status", response_class=HTMLResponse)
 def status(
+    request: Request,
     user: str | None = Query(None, description="Filter to a specific user DID"),
     db: Session = Depends(get_db),
 ):
+    if not _check_auth(request):
+        return _auth_required()
     if user:
         return _user_view(user, db)
     return _global_view(db)
+
+
+@router.post("/status/boost")
+def set_boost(
+    request: Request,
+    feed_uri: str = Form(...),
+    priority_boost: float = Form(...),
+    db: Session = Depends(get_db),
+):
+    if not _check_auth(request):
+        return _auth_required()
+    feed = db.query(Feed).filter(Feed.feed_uri == feed_uri).first()
+    if feed:
+        feed.priority_boost = max(0.0, min(1.0, priority_boost))
+        db.commit()
+    return RedirectResponse(url="/status", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -133,14 +191,12 @@ def _global_view(db: Session) -> HTMLResponse:
     </table>"""
 
     # Feed registry
-    from api.config import settings as cfg
     feeds = db.query(Feed).order_by(Feed.display_name).all()
     feed_rows = ""
     for f in feeds:
         section = f'<span class="reward-hi">✓</span>' if f.section_post_uri else '<span class="dim">—</span>'
-        tags = f.topic_tags or ""
         failures = f.consecutive_failures or 0
-        threshold = cfg.feed_health_failure_threshold
+        threshold = settings.feed_health_failure_threshold
         if f.last_checked_at is None:
             health_cell = '<span class="dim">unchecked</span>'
         elif failures == 0:
@@ -150,10 +206,30 @@ def _global_view(db: Session) -> HTMLResponse:
         else:
             health_cell = f'<span class="reward-lo">unhealthy ({failures})</span>'
         checked = f.last_checked_at.strftime("%m-%d %H:%M") if f.last_checked_at else "—"
+        boost = f.priority_boost if f.priority_boost is not None else 1.0
+        if boost == 0.0:
+            boost_cls = "boost-zero"
+        elif boost < 1.0:
+            boost_cls = "boost-low"
+        else:
+            boost_cls = "boost-full"
+        uri_escaped = f.feed_uri.replace('"', "&quot;")
+        boost_form = f"""<form class="boost-form" method="POST" action="/status/boost">
+          <input type="hidden" name="feed_uri" value="{uri_escaped}">
+          <input type="number" name="priority_boost" value="{boost:.2f}" min="0" max="1" step="0.1">
+          <button type="submit">set</button>
+        </form>"""
+        # Extract creator DID from feed URI (at://did:.../app.bsky.feed.generator/...)
+        uri_parts = f.feed_uri.split("/")
+        creator_did = uri_parts[2] if len(uri_parts) > 2 else ""
+        did_short = creator_did.split(":")[-1][:8] if creator_did else ""
+        added = f.added_at.strftime("%Y-%m-%d") if f.added_at else ""
+        name_cell = f"""{f.display_name}<br>
+          <span class="dim" style="font-size:10px">{did_short} · {added}</span>"""
         feed_rows += f"""<tr>
-          <td>{f.display_name}</td>
-          <td class="dim" style="font-size:11px">{tags}</td>
+          <td>{name_cell}</td>
           <td style="text-align:center">{section}</td>
+          <td class="{boost_cls}">{boost_form}</td>
           <td>{health_cell}</td>
           <td class="dim">{checked}</td>
         </tr>"""
@@ -161,7 +237,7 @@ def _global_view(db: Session) -> HTMLResponse:
     feeds_section = f"""
     <h2>Feed Registry ({total_feeds})</h2>
     <table>
-      <tr><th>Name</th><th>Tags</th><th>Section post</th><th>Health</th><th>Last checked</th></tr>
+      <tr><th>Name</th><th>Section post</th><th>Priority boost</th><th>Health</th><th>Last checked</th></tr>
       {feed_rows if feed_rows else '<tr><td colspan="5" class="dim">No feeds.</td></tr>'}
     </table>"""
 

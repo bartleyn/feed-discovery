@@ -1,13 +1,11 @@
 """
-Feed Discovery API — Phase 1 skeleton.
+Feed Discovery API.
 
 Startup sequence:
 1. Connect to Postgres, create tables if missing
 2. Authenticate with AT Protocol
 3. Mount routers
 
-Phase 2 will add impression/interaction endpoints.
-Phase 3 will add the /slate bandit endpoint.
 """
 
 import logging
