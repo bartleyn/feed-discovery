@@ -16,6 +16,7 @@ Post format:
 
 import logging
 import re
+import time
 from functools import lru_cache
 
 from atproto import Client, models
@@ -151,6 +152,15 @@ def create_section_post(feed: Feed) -> str:
 
     response = client.send_post(text=text, facets=facets or None)
     uri = response.uri
+
+    # Wait briefly for the AppView to index the new post — a URI placed in a
+    # skeleton before indexing completes is dropped during hydration, leaving
+    # the chunk's posts to render under the next chunk's header.
+    for _ in range(4):
+        if _post_still_exists(uri, client):
+            break
+        time.sleep(0.5)
+
     logger.info("Created section post for feed %s → %s", feed.feed_uri, uri)
     return uri
 

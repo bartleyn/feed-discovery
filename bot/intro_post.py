@@ -7,6 +7,7 @@ discovery feed, not a per-feed section header.
 """
 
 import logging
+import time
 
 from atproto import Client
 
@@ -19,7 +20,8 @@ _INTRO_TEXT = (
     "✨ Feed Discovery\n\n"
     "What follows is a ranked slate of chunks — a few posts each from "
     "different feeds you might enjoy. Interact with what catches your eye "
-    "and the ranker will learn which feeds to surface more."
+    "and the ranker will learn which feeds to surface more.\n\n"
+    "Note: NSFW feeds & posts are possible, and some info may render out of order."
 )
 
 _bot_client: Client | None = None
@@ -53,6 +55,17 @@ def ensure_intro_post(db) -> str | None:
         client = _get_bot_client()
         response = client.send_post(text=_INTRO_TEXT)
         uri = response.uri
+
+        # Wait briefly for the AppView to index the new post — a URI placed
+        # in a skeleton before indexing completes is dropped during hydration.
+        for _ in range(4):
+            try:
+                if client.app.bsky.feed.get_posts({"uris": [uri]}).posts:
+                    break
+            except Exception:
+                break
+            time.sleep(0.5)
+
         logger.info("Created intro post → %s", uri)
     except Exception as exc:
         logger.warning("Failed to create intro post: %s", exc)
