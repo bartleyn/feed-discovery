@@ -10,12 +10,11 @@ and bootstraps arm states for the default user.
 """
 
 import os
-import re
 import sqlite3
 import sys
-from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+from scripts.feed_utils import compute_priority_boost
 from store.database import SessionLocal
 from store.models import ArmState, Feed
 
@@ -24,18 +23,6 @@ JETSTREAM_DB = os.environ.get(
 )
 MIN_LIKES = int(os.environ.get("MIN_LIKES", "5"))
 DEFAULT_USER_DID = os.environ.get("DEFAULT_USER_DID", "")
-
-_CURRENT_YEAR = datetime.now(timezone.utc).year
-
-
-def compute_priority_boost(display_name: str, description: str) -> float:
-    text = f"{display_name} {description}".lower()
-    if "archived" in text or "inactive" in text:
-        return 0.1
-    years = {int(y) for y in re.findall(r'\b(20\d{2})\b', text)}
-    if any(y < _CURRENT_YEAR for y in years):
-        return 0.3
-    return 1.0
 
 
 def sync():
