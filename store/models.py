@@ -34,6 +34,11 @@ class Feed(Base):
     # Set < 1.0 for feeds marked Archived or Inactive.
     priority_boost = Column(Float, default=1.0, nullable=False, server_default="1.0")
 
+    # When True, posts from this feed are hydrated and scanned for harmful
+    # content before being added to the slate. Set manually after a bad post
+    # is observed; adds one getPosts round-trip per 25 posts served.
+    requires_filtering = Column(Integer, default=0, nullable=False, server_default="0")
+
     # Health tracking — updated by periodic feed health checks
     last_checked_at      = Column(DateTime, nullable=True)
     consecutive_failures = Column(Integer, default=0, nullable=False, server_default="0")
