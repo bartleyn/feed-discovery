@@ -49,6 +49,9 @@ class ATProtoClient:
         self._cache_lock = threading.Lock()
         # (feed_uri) -> (generator_did, skeleton_endpoint_url)
         self._generator_cache: dict[str, tuple[str, str]] = {}
+        # Persistent pooled client — reused across get_chunk calls so repeat
+        # requests to the same feed generator skip the TCP/TLS handshake.
+        self._http = httpx.Client(timeout=10, limits=httpx.Limits(max_keepalive_connections=20, max_connections=40))
 
     def login(self) -> str:
         """Authenticate and return the resolved DID."""
@@ -103,11 +106,10 @@ class ATProtoClient:
         try:
             generator_did, skeleton_url = self._resolve_generator(feed_uri)
             token = create_service_jwt(aud=generator_did, sub=user_did)
-            response = httpx.get(
+            response = self._http.get(
                 skeleton_url,
                 params={"feed": feed_uri, "limit": n},
                 headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
             )
             response.raise_for_status()
             items = response.json().get("feed", [])
