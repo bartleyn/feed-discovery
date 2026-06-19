@@ -128,11 +128,21 @@ def get_feed(
                 lambda f: atproto_client.get_chunk(f.feed_uri, user_did=user_did), batch
             ))
 
+        # Collect section post URIs already in the DB so we can strip them from
+        # chunks — some feeds pick up our bot's section posts (which mention
+        # the feed name) and return them as regular posts in their skeleton.
+        known_section_uris: set[str] = {
+            f.section_post_uri for f in feeds if f.section_post_uri
+        }
+
         for feed_row, chunk in zip(batch, chunks):
             # bsky.app silently drops URIs it has already rendered, so a post
             # repeated across chunks would punch a hole in the later chunk —
-            # dedupe here instead.
-            posts = [p for p in chunk.posts if p.uri not in slate_post_uris]
+            # dedupe here instead. Also strip our own section posts.
+            posts = [
+                p for p in chunk.posts
+                if p.uri not in slate_post_uris and p.uri not in known_section_uris
+            ]
 
             if posts and feed_row.requires_filtering:
                 posts = _filter_harmful_posts(posts)
