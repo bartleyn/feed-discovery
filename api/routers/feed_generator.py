@@ -16,7 +16,9 @@ from the posts above it.
 """
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import time
+import uuid
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from itertools import islice
 
@@ -29,6 +31,7 @@ from bandit.thompson import rank_feeds, update_arm
 from bot.intro_post import ensure_intro_post
 from bot.section_poster import ensure_section_post
 from ingestion import atproto_client
+from ingestion.caller import FeedChunk
 from store import get_db
 from store.models import Feed, Impression, ChunkPost
 
@@ -36,6 +39,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["feed-generator"])
 
 CURSOR_SEP = "|"
+
+# Separates the source feed URI from the impression id inside feedContext.
+# at-URIs never contain "|", so the encoding splits unambiguously and the
+# impression id pins attribution to the exact chunk even if the client
+# reorders posts before reporting interactions.
+CONTEXT_SEP = "|"
 
 _HARMFUL_TERMS = {"rape", "noncon", "non-con", "dubcon", "dub-con"}
 
@@ -102,6 +111,10 @@ def get_feed(
         if intro_uri:
             slate.append({"post": intro_uri, "feedContext": feed})
     now = datetime.now(timezone.utc)
+    # One reqId per getFeedSkeleton call. Stamped on every impression created
+    # below and returned at the top of the response, so interactions can be
+    # grouped back to this exact request.
+    req_id = uuid.uuid4().hex
     tried_uris: list[str] = []
     batch_limit = 4  # max batches per request to bound latency on pathological cases
 
@@ -195,6 +208,7 @@ def get_feed(
             feed_uri=feed_row.feed_uri,
             shown_at=now,
             posts_shown=len(posts),
+            req_id=req_id,
         )
         db.add(impression)
         db.flush()
@@ -206,7 +220,12 @@ def get_feed(
                 post_age_seconds=post.age_seconds,
                 position=len(slate) + position,
             ))
-            slate.append({"post": post.uri, "feedContext": feed_row.feed_uri})
+            # feedContext = "<feed_uri>|<impression_id>" so an interaction maps
+            # back to the exact impression regardless of client reordering.
+            slate.append({
+                "post": post.uri,
+                "feedContext": f"{feed_row.feed_uri}{CONTEXT_SEP}{impression.id}",
+            })
 
         if section_uri:
             logger.debug(
@@ -229,7 +248,7 @@ def get_feed(
         user_did, _batch + 1, len(tried_uris), len(slate), len(deferred_uris),
     )
 
-    response: dict = {"feed": slate}
+    response: dict = {"feed": slate, "reqId": req_id}
     if next_cursor:
         response["cursor"] = next_cursor
     return response

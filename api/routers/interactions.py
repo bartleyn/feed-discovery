@@ -2,7 +2,8 @@
 POST /xrpc/app.bsky.feed.sendInteractions
 
 bsky.app calls this endpoint when the user interacts with posts in our feed.
-Each interaction includes the post URI, event type, and our feedContext (= feed URI).
+Each interaction includes the post URI, event type, our feedContext
+("<feed_uri>|<impression_id>"), and the reqId from the serving request.
 
 We log the interaction against the most recent matching impression and, for
 explicit requestMore / requestLess events, immediately update the arm.
@@ -40,10 +41,75 @@ class InteractionItem(BaseModel):
     item: str           # post URI
     event: str          # app.bsky.feed.defs#...
     feedContext: str | None = None
+    reqId: str | None = None
 
 
 class SendInteractionsIn(BaseModel):
     interactions: list[InteractionItem]
+
+
+# feedContext we emit is "<feed_uri>|<impression_id>" (see feed_generator.py).
+# Older impressions carry a bare feed_uri, so the impression id is optional.
+CONTEXT_SEP = "|"
+
+
+def _parse_feed_context(feed_context: str | None) -> tuple[str | None, int | None]:
+    """Split feedContext into (feed_uri, impression_id). Tolerates the legacy
+    bare-feed_uri form and any unexpected shape by returning what it can."""
+    if not feed_context:
+        return None, None
+    feed_uri, sep, tail = feed_context.rpartition(CONTEXT_SEP)
+    if sep and tail.isdigit():
+        return feed_uri, int(tail)
+    return feed_context, None
+
+
+def _resolve_chunk_post(db, item: "InteractionItem", user_did: str):
+    """Locate the exact ChunkPost an interaction refers to, preferring the
+    impression id baked into feedContext, then reqId, then a best-effort
+    most-recent match. Returns (chunk_post, feed_uri) or (None, feed_uri)."""
+    feed_uri, impression_id = _parse_feed_context(item.feedContext)
+
+    # 1. Exact: feedContext carries the impression id — reordering-proof.
+    if impression_id is not None:
+        chunk_post = (
+            db.query(ChunkPost)
+            .filter(ChunkPost.impression_id == impression_id, ChunkPost.post_uri == item.item)
+            .first()
+        )
+        if chunk_post is not None:
+            return chunk_post, (feed_uri or chunk_post.impression.feed_uri)
+
+    # 2. reqId groups one request's impressions — narrow to this serve.
+    if item.reqId:
+        chunk_post = (
+            db.query(ChunkPost)
+            .join(Impression, ChunkPost.impression_id == Impression.id)
+            .filter(
+                ChunkPost.post_uri == item.item,
+                Impression.user_did == user_did,
+                Impression.req_id == item.reqId,
+            )
+            .order_by(Impression.shown_at.desc())
+            .first()
+        )
+        if chunk_post is not None:
+            return chunk_post, (feed_uri or chunk_post.impression.feed_uri)
+
+    # 3. Legacy fallback: most recent unrewarded impression for post + feed.
+    chunk_post = (
+        db.query(ChunkPost)
+        .join(Impression, ChunkPost.impression_id == Impression.id)
+        .filter(
+            ChunkPost.post_uri == item.item,
+            Impression.user_did == user_did,
+            Impression.feed_uri == feed_uri,
+            Impression.reward.is_(None),
+        )
+        .order_by(Impression.shown_at.desc())
+        .first()
+    )
+    return chunk_post, feed_uri
 
 
 @router.post("/xrpc/app.bsky.feed.sendInteractions")
@@ -57,22 +123,8 @@ def send_interactions(body: SendInteractionsIn, db: Session = Depends(get_db)):
             continue
 
         action, immediate_reward = mapped
-        feed_uri = item.feedContext
 
-        # Find the most recent unrewarded impression for this post + feed
-        chunk_post = (
-            db.query(ChunkPost)
-            .join(Impression, ChunkPost.impression_id == Impression.id)
-            .filter(
-                ChunkPost.post_uri == item.item,
-                Impression.user_did == user_did,
-                Impression.feed_uri == feed_uri,
-                Impression.reward.is_(None),
-            )
-            .order_by(Impression.shown_at.desc())
-            .first()
-        )
-
+        chunk_post, feed_uri = _resolve_chunk_post(db, item, user_did)
         if chunk_post is None:
             continue
 
