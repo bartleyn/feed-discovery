@@ -136,22 +136,49 @@ def get_feed(
         seen_uris.update(batch_uris)
         tried_uris.extend(batch_uris)
 
-        with ThreadPoolExecutor(max_workers=len(batch)) as pool:
-            chunks = list(pool.map(
-                lambda f: atproto_client.get_chunk(f.feed_uri, user_did=user_did), batch
-            ))
+        # Fetch feeds but don't wait too long, abandon them if too long
+        pool = ThreadPoolExecutor(max_workers=len(batch))
+        futures = {
+            pool.submit(atproto_client.get_chunk, f.feed_uri, user_did=user_did): f
+            for f in batch
+        }
+        deadline = time.monotonic() + settings.upstream_deadline_seconds
+        pending_futs = set(futures)
+        chunks_by_uri: dict[str, FeedChunk] = {}
+        while pending_futs:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, pending_futs = wait(
+                pending_futs, timeout=remaining, return_when=FIRST_COMPLETED
+            )
+            for fut in done:
+                feed_row = futures[fut]
+                try:
+                    chunks_by_uri[feed_row.feed_uri] = fut.result()
+                except Exception as exc:
+                    logger.warning("get_chunk failed for %s: %s", feed_row.feed_uri, exc)
+        if pending_futs:
+            logger.info(
+                "upstream deadline hit: %d/%d feeds abandoned this batch",
+                len(pending_futs), len(batch),
+            )
+        pool.shutdown(wait=False, cancel_futures=True)
 
-        # Collect section post URIs already in the DB so we can strip them from
-        # chunks — some feeds pick up our bot's section posts (which mention
-        # the feed name) and return them as regular posts in their skeleton.
+        chunks = [
+            chunks_by_uri.get(
+                f.feed_uri, FeedChunk(feed_uri=f.feed_uri, posts=[], fetched_at=now)
+            )
+            for f in batch
+        ]
+
+        # Strip the section posts that some feeds pick up from this feed
         known_section_uris: set[str] = {
             f.section_post_uri for f in feeds if f.section_post_uri
         }
 
         for feed_row, chunk in zip(batch, chunks):
-            # bsky.app silently drops URIs it has already rendered, so a post
-            # repeated across chunks would punch a hole in the later chunk —
-            # dedupe here instead. Also strip our own section posts.
+            # bsky.app silently drops URIs it has already rendered, so dedupe here
             posts = [
                 p for p in chunk.posts
                 if p.uri not in slate_post_uris and p.uri not in known_section_uris

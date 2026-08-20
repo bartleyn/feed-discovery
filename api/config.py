@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # batch. Kept under bsky.app's getFeedSkeleton timeout so we always return
     # in time — feeds that don't respond by the deadline are abandoned and
     # treated as empty (penalised) rather than blocking the whole response.
-    upstream_deadline_seconds: float = 2.5
+    upstream_deadline_seconds: float = 2.0
 
     # Reward window in minutes — how long after impression to collect interactions
     reward_window_minutes: int = 5
