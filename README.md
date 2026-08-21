@@ -1,88 +1,108 @@
 # feed-discovery
 
-Contextual multi-armed bandit for Bluesky feed-of-feeds discovery.
+An AT Protocol **feed generator that recommends other people's feeds**. Instead of
+serving posts on a topic, it serves a *feed of feeds*: each response is a handful of
+short chunks pulled live from candidate feed generators, so scrolling the feed is a
+tour of the Bluesky feed ecosystem rather than of one timeline.
 
-Each feed is an arm. Users are shown chunks (5-post previews) of feeds.
-Interactions with chunks (likes, reposts, subscribes) update the bandit's
-belief about each feed's value for that user.
+Live as a custom feed on Bluesky — `did:web:feeds.barn.city`
 
-## Phase status
+Currently it's implemented as a multi-armed bandit over existing feeds, which is good
+for cold start exploration, but we have since gathered additional content-related information
+suggesting a hybrid content/CF approach optimized towards novelty is more rewarding.
 
-- [x] Phase 1 — Data layer, AT Proto caller, FastAPI skeleton
-- [ ] Phase 2 — Impression & interaction logging, reward computation
-- [ ] Phase 3 — Thompson Sampling bandit, /slate endpoint
-- [ ] Phase 4 — Frontend chunk display UI
+## How a request works
+
+`app.bsky.feed.getFeedSkeleton` is the whole surface:
+
+```
+bsky.app ──► GET /xrpc/app.bsky.feed.getFeedSkeleton   (service JWT verified)
+                │
+                ├─ 1. select N feeds from the registry          (feeds_per_slate = 4)
+                ├─ 2. fetch a chunk from each, in parallel      (chunk_size = 8 posts)
+                │      hard wall-clock budget of 2.0s — a feed that misses the
+                │      deadline is abandoned and treated as empty, never blocking
+                │      the response past bsky.app's own timeout
+                ├─ 3. filter harmful posts, assemble chunks atomically
+                ├─ 4. log one impression per feed shown
+                └─► skeleton of post URIs, each tagged
+                      feedContext = "<feed_uri>|<impression_id>"
+```
+
+`feedContext` allows the API to attribute an interaction to a specific feed via `appbsky.feed.sendInteractions`
+
+### Endpoints
+
+| route | purpose |
+|---|---|
+| `GET /.well-known/did.json` | did:web document (identity) |
+| `GET /xrpc/app.bsky.feed.describeFeedGenerator` | feed generator descriptor |
+| `GET /xrpc/app.bsky.feed.getFeedSkeleton` | **the feed** |
+| `POST /xrpc/app.bsky.feed.sendInteractions` | interaction ingest |
+| `GET /feeds/`, `GET /feeds/{uri}/chunk` | registry inspection / raw chunk (no impression) |
+| `GET /status` | admin page (HTTP Basic; `STATUS_PASSWORD`) |
+| `GET /health` | liveness |
+
 
 ## Setup
 
-### 1. Configure credentials
-
 ```bash
-cp .env.example .env
-# Fill in ATPROTO_HANDLE and ATPROTO_PASSWORD (use an app password)
+cp .env.example .env        # ATPROTO_HANDLE, ATPROTO_PASSWORD (app password),
+                            # FEED_GENERATOR_HOSTNAME, FEED_GENERATOR_SIGNING_KEY
+make up                     # docker compose up
+make upgrade                # alembic migrations
+make seed                   # seed the feed registry
 ```
 
-### 2. Start services
+Verify:
 
 ```bash
-make up
+curl http://localhost:8391/health
+curl http://localhost:8391/feeds/
+curl http://localhost:8391/.well-known/did.json
+make test-chunk             # raw chunk, no impression logged
 ```
 
-### 3. Run migrations & seed
-
-```bash
-make upgrade
-make seed
-```
-
-### 4. Verify
-
-```bash
-# Health check
-curl http://localhost:8000/health
-
-# List feeds in registry
-curl http://localhost:8000/feeds/
-
-# Fetch a raw chunk (no impression logged)
-make test-chunk
-```
-
-API docs: http://localhost:8000/docs
+API docs: http://localhost:8391/docs
 
 ## Project structure
 
 ```
 feed-discovery/
 ├── api/
-│   ├── main.py          # FastAPI app, startup, lifespan
-│   ├── config.py        # Settings (pydantic-settings)
-│   ├── schemas.py       # Pydantic request/response models
+│   ├── main.py                  # FastAPI app, lifespan, scheduler
+│   ├── config.py                # settings (pydantic-settings)
 │   └── routers/
-│       └── feeds.py     # GET /feeds/, GET /feeds/{uri}/chunk
+│       ├── feed_generator.py    # getFeedSkeleton — slate assembly, deadlines, filtering
+│       ├── well_known.py        # did:web document, describeFeedGenerator
+│       ├── interactions.py      # sendInteractions ingest
+│       ├── feeds.py             # registry inspection
+│       └── status.py            # admin page
+├── bandit/
+│   ├── thompson.py              # Beta–Bernoulli sampling, arm updates
+│   └── reward.py                # interaction → reward mapping
 ├── ingestion/
-│   └── caller.py        # ATProtoClient — authenticates, calls feed generators
-├── store/
-│   ├── models.py        # SQLAlchemy ORM models
-│   ├── database.py      # Engine, SessionLocal, get_db dependency
-│   ├── seed.py          # Feed registry seeding script
-│   └── migrations/      # Alembic migrations
-├── bandit/              # Phase 3 — Thompson Sampling (empty)
-├── interaction/         # Phase 2 — interaction logging (empty)
-├── docker-compose.yml
-├── Dockerfile
-├── requirements.txt
-└── Makefile
+│   ├── caller.py                # ATProtoClient — auth, upstream feed calls
+│   ├── feed_health.py           # liveness probing
+│   └── feed_likes.py            # AppView like-count refresh
+├── bot/                         # intro post + section posts between chunks
+├── dags/                        # Airflow: liveness refresh, layout rebuild
+├── scripts/                     # sync, clustering (BERTopic/kmeans), layout, backfills
+└── store/                       # SQLAlchemy models, migrations
 ```
 
-## Schema overview
+## Schema
 
 | Table | Purpose |
 |---|---|
-| `feeds` | Registry of known Bluesky feed URIs |
-| `impressions` | Each chunk shown to a user (one bandit pull) |
-| `chunk_posts` | Individual posts in each shown chunk |
-| `interactions` | User actions on chunk posts (like, repost, subscribe…) |
-| `arm_state` | Thompson Sampling α/β per (user_did, feed_uri) |
+| `feeds` | Candidate registry — URI, creator, like count, liveness, cluster, priority boost |
+| `feed_clusters` | Theme assignment for feeds |
+| `impressions` | One row per feed shown in a response (one bandit pull) |
+| `chunk_posts` | Individual posts within a shown chunk |
+| `interactions` | User actions attributed via `feedContext` |
+| `arm_state` | Thompson α/β per `(user_did, feed_uri)` |
 
-All tables carry `user_did` — multi-user ready at the schema level.
+All tables carry `user_did` — multi-user at the schema level, single-user in practice today.
+
+### Known gaps
+
