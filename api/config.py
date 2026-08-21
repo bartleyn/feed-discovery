@@ -26,17 +26,26 @@ class Settings(BaseSettings):
     # Corresponding public key in multibase format — added to the DID document
     feed_generator_public_key_multibase: str = ""
 
-    # How many feeds to call per getFeedSkeleton request
-    feeds_per_slate: int = 6
+    # How many feeds to call per getFeedSkeleton request.
+    feeds_per_slate: int = 4
 
-    # Chunk size — number of posts to pull from each feed
-    chunk_size: int = 5
+    # Chunk size — number of posts to pull from each feed.e
+    chunk_size: int = 8
+
+    # Hard wall-clock budget (seconds) for upstream feed fetches within one
+    # batch. Kept under bsky.app's getFeedSkeleton timeout so we always return
+    # in time — feeds that don't respond by the deadline are abandoned and
+    # treated as empty (penalised) rather than blocking the whole response.
+    upstream_deadline_seconds: float = 2.0
 
     # Reward window in minutes — how long after impression to collect interactions
     reward_window_minutes: int = 5
 
     # How often to health-check feeds (hours); 0 disables
     feed_health_interval_hours: int = 0
+
+    # How often to refresh served-feed like counts from the AppView (hours); 0 disables
+    feed_likes_interval_hours: int = 0
 
     # Consecutive failures before a feed is flagged as unhealthy in status
     feed_health_failure_threshold: int = 3
