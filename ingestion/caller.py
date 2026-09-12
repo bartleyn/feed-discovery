@@ -51,7 +51,14 @@ class ATProtoClient:
         self._generator_cache: dict[str, tuple[str, str]] = {}
         # Persistent pooled client — reused across get_chunk calls so repeat
         # requests to the same feed generator skip the TCP/TLS handshake.
-        self._http = httpx.Client(timeout=10, limits=httpx.Limits(max_keepalive_connections=20, max_connections=40))
+        # Granular, tight timeouts: a dead upstream feed is abandoned in a few
+        # seconds rather than the old blanket 10s, keeping us under bsky.app's
+        # getFeedSkeleton budget. The per-request deadline in feed_generator.py
+        # bounds the batch as a whole; these bound each individual call.
+        self._http = httpx.Client(
+            timeout=httpx.Timeout(connect=2.0, read=2.5, write=2.5, pool=2.5),
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+        )
 
     def login(self) -> str:
         """Authenticate and return the resolved DID."""

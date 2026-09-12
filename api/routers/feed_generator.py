@@ -16,7 +16,9 @@ from the posts above it.
 """
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import time
+import uuid
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from itertools import islice
 
@@ -29,6 +31,7 @@ from bandit.thompson import rank_feeds, update_arm
 from bot.intro_post import ensure_intro_post
 from bot.section_poster import ensure_section_post
 from ingestion import atproto_client
+from ingestion.caller import FeedChunk
 from store import get_db
 from store.models import Feed, Impression, ChunkPost
 
@@ -36,6 +39,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["feed-generator"])
 
 CURSOR_SEP = "|"
+
+# Separates the source feed URI from the impression id inside feedContext.
+# at-URIs never contain "|", so the encoding splits unambiguously and the
+# impression id pins attribution to the exact chunk even if the client
+# reorders posts before reporting interactions.
+CONTEXT_SEP = "|"
 
 _HARMFUL_TERMS = {"rape", "noncon", "non-con", "dubcon", "dub-con"}
 
@@ -102,6 +111,10 @@ def get_feed(
         if intro_uri:
             slate.append({"post": intro_uri, "feedContext": feed})
     now = datetime.now(timezone.utc)
+    # One reqId per getFeedSkeleton call. Stamped on every impression created
+    # below and returned at the top of the response, so interactions can be
+    # grouped back to this exact request.
+    req_id = uuid.uuid4().hex
     tried_uris: list[str] = []
     batch_limit = 4  # max batches per request to bound latency on pathological cases
 
@@ -123,22 +136,49 @@ def get_feed(
         seen_uris.update(batch_uris)
         tried_uris.extend(batch_uris)
 
-        with ThreadPoolExecutor(max_workers=len(batch)) as pool:
-            chunks = list(pool.map(
-                lambda f: atproto_client.get_chunk(f.feed_uri, user_did=user_did), batch
-            ))
+        # Fetch feeds but don't wait too long, abandon them if too long
+        pool = ThreadPoolExecutor(max_workers=len(batch))
+        futures = {
+            pool.submit(atproto_client.get_chunk, f.feed_uri, user_did=user_did): f
+            for f in batch
+        }
+        deadline = time.monotonic() + settings.upstream_deadline_seconds
+        pending_futs = set(futures)
+        chunks_by_uri: dict[str, FeedChunk] = {}
+        while pending_futs:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, pending_futs = wait(
+                pending_futs, timeout=remaining, return_when=FIRST_COMPLETED
+            )
+            for fut in done:
+                feed_row = futures[fut]
+                try:
+                    chunks_by_uri[feed_row.feed_uri] = fut.result()
+                except Exception as exc:
+                    logger.warning("get_chunk failed for %s: %s", feed_row.feed_uri, exc)
+        if pending_futs:
+            logger.info(
+                "upstream deadline hit: %d/%d feeds abandoned this batch",
+                len(pending_futs), len(batch),
+            )
+        pool.shutdown(wait=False, cancel_futures=True)
 
-        # Collect section post URIs already in the DB so we can strip them from
-        # chunks — some feeds pick up our bot's section posts (which mention
-        # the feed name) and return them as regular posts in their skeleton.
+        chunks = [
+            chunks_by_uri.get(
+                f.feed_uri, FeedChunk(feed_uri=f.feed_uri, posts=[], fetched_at=now)
+            )
+            for f in batch
+        ]
+
+        # Strip the section posts that some feeds pick up from this feed
         known_section_uris: set[str] = {
             f.section_post_uri for f in feeds if f.section_post_uri
         }
 
         for feed_row, chunk in zip(batch, chunks):
-            # bsky.app silently drops URIs it has already rendered, so a post
-            # repeated across chunks would punch a hole in the later chunk —
-            # dedupe here instead. Also strip our own section posts.
+            # bsky.app silently drops URIs it has already rendered, so dedupe here
             posts = [
                 p for p in chunk.posts
                 if p.uri not in slate_post_uris and p.uri not in known_section_uris
@@ -195,6 +235,7 @@ def get_feed(
             feed_uri=feed_row.feed_uri,
             shown_at=now,
             posts_shown=len(posts),
+            req_id=req_id,
         )
         db.add(impression)
         db.flush()
@@ -206,7 +247,12 @@ def get_feed(
                 post_age_seconds=post.age_seconds,
                 position=len(slate) + position,
             ))
-            slate.append({"post": post.uri, "feedContext": feed_row.feed_uri})
+            # feedContext = "<feed_uri>|<impression_id>" so an interaction maps
+            # back to the exact impression regardless of client reordering.
+            slate.append({
+                "post": post.uri,
+                "feedContext": f"{feed_row.feed_uri}{CONTEXT_SEP}{impression.id}",
+            })
 
         if section_uri:
             logger.debug(
@@ -229,7 +275,7 @@ def get_feed(
         user_did, _batch + 1, len(tried_uris), len(slate), len(deferred_uris),
     )
 
-    response: dict = {"feed": slate}
+    response: dict = {"feed": slate, "reqId": req_id}
     if next_cursor:
         response["cursor"] = next_cursor
     return response

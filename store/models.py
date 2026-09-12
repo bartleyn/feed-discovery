@@ -43,6 +43,11 @@ class Feed(Base):
     last_checked_at      = Column(DateTime, nullable=True)
     consecutive_failures = Column(Integer, default=0, nullable=False, server_default="0")
 
+    # Lifetime like count from the AppView — refreshed by the periodic likes job.
+    # Used as a within-cluster sort / popularity signal, not for ranking.
+    like_count       = Column(Integer, nullable=True)
+    likes_fetched_at = Column(DateTime, nullable=True)
+
     impressions  = relationship("Impression", back_populates="feed")
     arm_states   = relationship("ArmState", back_populates="feed")
 
@@ -56,6 +61,10 @@ class Impression(Base):
     feed_uri     = Column(String, ForeignKey("feeds.feed_uri"), nullable=False)
     shown_at     = Column(DateTime, default=datetime.utcnow)
     posts_shown  = Column(Integer, nullable=False)
+    # reqId returned in the getFeedSkeleton response and echoed back on
+    # sendInteractions. Groups all impressions served in one request; used as a
+    # fallback for attribution when feedContext carries no impression id.
+    req_id       = Column(String, nullable=True, index=True)
     reward       = Column(Float, nullable=True)       # filled by reward job 30 min later
     rewarded_at  = Column(DateTime, nullable=True)
 
