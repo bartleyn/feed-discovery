@@ -1,8 +1,16 @@
-.PHONY: up down logs migrate seed test-chunk sync-feeds
+.PHONY: up dev down logs migrate seed test test-chunk sync-feeds
 
-# Start all services
+# Start all services (hardened: code baked into the image, no bind mount)
 up:
 	docker compose up --build -d
+
+# Start with the checkout bind-mounted and live reload, for local hacking
+dev:
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
+
+# Run the unit tests inside the image against the current checkout
+test:
+	docker compose run --rm --no-deps -v "$(CURDIR):/app" -e DATABASE_URL=postgresql://x:x@localhost:1/x api python -m pytest tests -q
 
 # Stop all services
 down:

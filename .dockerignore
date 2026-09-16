@@ -1,0 +1,26 @@
+# Secrets and local state never belong in the image.
+.env
+.env.*
+!.env.example
+
+# VCS, caches, virtualenvs
+.git
+.claude
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Data dumps and eval artefacts (tens of MB; read from the host by scripts)
+*.csv
+*.jsonl
+eval/
+pgdata/
+
+# Docs and plans
+*.md
+docker-compose*.yml
+Makefile

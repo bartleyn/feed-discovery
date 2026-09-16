@@ -21,6 +21,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
   api:
     build: .
@@ -28,6 +31,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Explicit allowlist. Compose interpolates these from .env on the host; the
+    # file itself is not mounted, so keys the API never uses (Cloudflare,
+    # Anthropic, R2) stay on the host with the scripts that need them.
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-feed}:${POSTGRES_PASSWORD:-feed}@db:5432/${POSTGRES_DB:-feed_discovery}
       ATPROTO_HANDLE: ${ATPROTO_HANDLE}
@@ -35,12 +41,25 @@ services:
       DEFAULT_USER_DID: ${DEFAULT_USER_DID}
       FEED_GENERATOR_HOSTNAME: ${FEED_GENERATOR_HOSTNAME}
       FEED_GENERATOR_DID: ${FEED_GENERATOR_DID}
+      FEED_GENERATOR_SIGNING_KEY: ${FEED_GENERATOR_SIGNING_KEY}
+      FEED_GENERATOR_PUBLIC_KEY_MULTIBASE: ${FEED_GENERATOR_PUBLIC_KEY_MULTIBASE}
+      BOT_HANDLE: ${BOT_HANDLE:-}
+      BOT_PASSWORD: ${BOT_PASSWORD:-}
+      STATUS_PASSWORD: ${STATUS_PASSWORD:-}
+      FEED_HEALTH_INTERVAL_HOURS: ${FEED_HEALTH_INTERVAL_HOURS:-0}
+      FEED_LIKES_INTERVAL_HOURS: ${FEED_LIKES_INTERVAL_HOURS:-0}
     ports:
       - "8391:8391"
     volumes:
-      - .:/app
+      # Read-only data input for `make sync-feeds`; not a secret.
       - ../jetstream-activity.db:/data/jetstream-activity.db:ro
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8391 --reload
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
 volumes:
   pgdata:
