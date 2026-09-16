@@ -47,8 +47,11 @@ class Settings(BaseSettings):
     # How often to refresh served-feed like counts from the AppView (hours); 0 disables
     feed_likes_interval_hours: int = 0
 
-    # Consecutive failures before a feed is flagged as unhealthy in status
+    # Consecutive empty/failed fetches before a feed is quarantined from ranking
     feed_health_failure_threshold: int = 3
+
+    # How long a quarantined feed sits out before it gets one retry (hours)
+    feed_health_retry_hours: float = 24.0
 
     # Password for the /status admin page (HTTP Basic Auth). Empty = no auth.
     status_password: str = ""
