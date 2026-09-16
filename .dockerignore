@@ -16,6 +16,7 @@ __pycache__
 
 # Data dumps and eval artefacts (tens of MB; read from the host by scripts)
 *.csv
+!scripts/popular_feeds.csv
 *.jsonl
 eval/
 pgdata/
