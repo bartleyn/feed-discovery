@@ -8,7 +8,7 @@ class FeedOut(BaseModel):
     feed_uri: str
     display_name: str
     description: str
-    topic_tags: str
+    topic_tags: str | None = None
     added_at: datetime
 
     model_config = {"from_attributes": True}

@@ -9,12 +9,21 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # 5433 on the host, NOT 5432. The always-on Homebrew postgres@16 owns the loopback
+      # bind on 5432 (it hosts feedmoreseemore.feed_health and atproto_health), and it
+      # SHADOWS this container's publish: a host process asking for localhost:5432 silently
+      # reaches brew, which is why `psql postgresql://feed:feed@localhost:5432/feed_discovery`
+      # failed with `role "feed" does not exist` rather than a connection error.
+      # Container-to-container traffic is unaffected — the api still uses db:5432.
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-feed}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
   api:
     build: .
@@ -22,6 +31,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Explicit allowlist. Compose interpolates these from .env on the host; the
+    # file itself is not mounted, so keys the API never uses (Cloudflare,
+    # Anthropic, R2) stay on the host with the scripts that need them.
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-feed}:${POSTGRES_PASSWORD:-feed}@db:5432/${POSTGRES_DB:-feed_discovery}
       ATPROTO_HANDLE: ${ATPROTO_HANDLE}
@@ -29,12 +41,25 @@ services:
       DEFAULT_USER_DID: ${DEFAULT_USER_DID}
       FEED_GENERATOR_HOSTNAME: ${FEED_GENERATOR_HOSTNAME}
       FEED_GENERATOR_DID: ${FEED_GENERATOR_DID}
+      FEED_GENERATOR_SIGNING_KEY: ${FEED_GENERATOR_SIGNING_KEY}
+      FEED_GENERATOR_PUBLIC_KEY_MULTIBASE: ${FEED_GENERATOR_PUBLIC_KEY_MULTIBASE}
+      BOT_HANDLE: ${BOT_HANDLE:-}
+      BOT_PASSWORD: ${BOT_PASSWORD:-}
+      STATUS_PASSWORD: ${STATUS_PASSWORD:-}
+      FEED_HEALTH_INTERVAL_HOURS: ${FEED_HEALTH_INTERVAL_HOURS:-0}
+      FEED_LIKES_INTERVAL_HOURS: ${FEED_LIKES_INTERVAL_HOURS:-0}
     ports:
       - "8391:8391"
     volumes:
-      - .:/app
-      - /Users/nathanbartley/Documents/personal_dev/github/atproto-health/jetstream-activity.db:/data/jetstream-activity.db:ro
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8391 --reload
+      # Read-only data input for `make sync-feeds`; not a secret.
+      - ../jetstream-activity.db:/data/jetstream-activity.db:ro
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
 volumes:
   pgdata:

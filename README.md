@@ -37,8 +37,8 @@ bsky.app ──► GET /xrpc/app.bsky.feed.getFeedSkeleton   (service JWT verifi
 |---|---|
 | `GET /.well-known/did.json` | did:web document (identity) |
 | `GET /xrpc/app.bsky.feed.describeFeedGenerator` | feed generator descriptor |
-| `GET /xrpc/app.bsky.feed.getFeedSkeleton` | **the feed** |
-| `POST /xrpc/app.bsky.feed.sendInteractions` | interaction ingest |
+| `GET /xrpc/app.bsky.feed.getFeedSkeleton` | **the feed** (service JWT → user; no token → anonymous slate, nothing logged) |
+| `POST /xrpc/app.bsky.feed.sendInteractions` | interaction ingest (service JWT required; user taken from `iss`) |
 | `GET /feeds/`, `GET /feeds/{uri}/chunk` | registry inspection / raw chunk (no impression) |
 | `GET /status` | admin page (HTTP Basic; `STATUS_PASSWORD`) |
 | `GET /health` | liveness |
@@ -49,10 +49,16 @@ bsky.app ──► GET /xrpc/app.bsky.feed.getFeedSkeleton   (service JWT verifi
 ```bash
 cp .env.example .env        # ATPROTO_HANDLE, ATPROTO_PASSWORD (app password),
                             # FEED_GENERATOR_HOSTNAME, FEED_GENERATOR_SIGNING_KEY
-make up                     # docker compose up
+make up                     # docker compose up (code baked into the image, runs as non-root)
 make upgrade                # alembic migrations
 make seed                   # seed the feed registry
 ```
+
+For local hacking, `make dev` adds a bind mount and live reload (see
+`docker-compose.dev.yml`). `make test` runs the unit tests inside the image.
+The api container gets an explicit allowlist of variables from `.env`; the
+file itself is never mounted or copied in.
+
 
 Verify:
 
