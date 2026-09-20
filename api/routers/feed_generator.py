@@ -4,11 +4,6 @@ GET /xrpc/app.bsky.feed.getFeedSkeleton
 Calls feeds in Thompson Sampling order, logs impressions + chunk_posts,
 and returns a flat post slate to bsky.app.
 
-Cursor encodes which feed URIs have already been shown in this session as a
-pipe-delimited string. Each page pulls the next N highest-ranked feeds from
-the remainder. When all feeds are exhausted the cursor is omitted, and
-bsky.app will start a fresh session on next pull.
-
 Chunks are kept atomic: the response is assembled whole-chunk-at-a-time up to
 `limit`, and a chunk that doesn't fit is deferred to the next page (excluded
 from the cursor) rather than truncated, so a section post is never separated
@@ -94,8 +89,7 @@ def get_feed(
 
     now = datetime.now(timezone.utc)
     all_feeds = db.query(Feed).all()
-    # Liveness is a filter, not a preference. Feeds that keep returning
-    # nothing sit out for a retry window instead of being ranked and
+    # Feeds that keep returning nothing sit out for a retry window instead of being ranked and
     # penalised on every request.
     feeds = [
         f for f in all_feeds
@@ -106,29 +100,23 @@ def get_feed(
     if not feeds:
         return {"feed": []}
 
-    # Cursor encodes all feed URIs tried so far this session — skip them so
-    # each scroll page shows fresh feed sources. Reset when cursor is absent.
+    # Cursor encodes all feed URIs tried so far this session
     seen_uris: set[str] = set(cursor.split(CURSOR_SEP)) if cursor else set()
 
     feed_map = {f.feed_uri: f for f in feeds}
 
     slate: list[dict] = []
 
-    # First page only: one intro post at the top describing what this feed is.
+    # First page only: add intro post
     if cursor is None:
         intro_uri = ensure_intro_post(db)
         if intro_uri:
             slate.append({"post": intro_uri, "feedContext": feed})
     # One reqId per getFeedSkeleton call. Stamped on every impression created
-    # below and returned at the top of the response, so interactions can be
-    # grouped back to this exact request.
     req_id = uuid.uuid4().hex
     tried_uris: list[str] = []
     batch_limit = 4  # max batches per request to bound latency on pathological cases
 
-    # (feed_row, posts) units collected this request, assembled into the
-    # response at chunk boundaries below so the limit cut never separates a
-    # section post from the posts above it.
     pending: list[tuple[Feed, list]] = []
     slate_post_uris: set[str] = set()
 
@@ -189,9 +177,6 @@ def get_feed(
         }
 
         for feed_row, chunk in zip(batch, chunks):
-            # Liveness bookkeeping happens on the raw upstream response, before
-            # dedupe and safety filtering: a generator that answered is alive
-            # even if everything it returned was already on the page.
             record_fetch_outcome(feed_row, bool(chunk.posts), now)
 
             # bsky.app silently drops URIs it has already rendered, so dedupe here
@@ -219,11 +204,7 @@ def get_feed(
         if pending:
             break  # got posts — stop fetching more batches
 
-    # Assemble whole chunks up to `limit`, logging only what is actually
-    # returned. A chunk that doesn't fit is deferred to the next page (and
-    # dropped from the cursor so it gets served then) — truncating it would
-    # cut off its section post and leave its posts rendering under the next
-    # chunk's header.
+    # A chunk that doesn't fit is deferred to the next page
     deferred_uris: set[str] = set()
     chunks_included = 0
     for idx, (feed_row, posts) in enumerate(pending):
