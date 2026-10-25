@@ -38,7 +38,7 @@ def main():
         }
     )
 
-    print(f"Registered feed generator record.")
+    print("Registered feed generator record.")
     print(f"Feed URI: {feed_uri}")
     print(f"Generator DID: {settings.feed_generator_did}")
     print()
