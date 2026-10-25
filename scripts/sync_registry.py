@@ -46,7 +46,7 @@ BATCH = 5000
 # creator's account status from atproto-health's PDS scan; NULL = active (the scan lists only inactive repos).
 # A status counts only if scanned on the creator's CURRENT PDS: migrated accounts read "deactivated" on the old one.
 SOURCE = """
-SELECT {}, s.status AS creator_status
+SELECT {}, s.status AS creator_status, f.skyfeed_builder::text AS skyfeed_builder
 FROM activity.feed_generators f
 LEFT JOIN plc.plc_did_pds p ON p.did = f.creator_did
 LEFT JOIN plc.did_repo_status s
@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS feed_generators (
 ALTER TABLE feed_generators ADD COLUMN IF NOT EXISTS service_did text;
 -- deactivated / takendown / deleted / ...; NULL when the creator's account is active
 ALTER TABLE feed_generators ADD COLUMN IF NOT EXISTS creator_status text;
+-- SkyFeed recipe (inputs, regex filters, sort); JSON null = read, none; NULL = not read (atproto-health 014)
+ALTER TABLE feed_generators ADD COLUMN IF NOT EXISTS skyfeed_builder jsonb;
 CREATE INDEX IF NOT EXISTS idx_feed_generators_creator
     ON feed_generators (creator_did);
 -- Every consumer filters `deleted_at IS NULL`; a partial index keeps that scan off the
@@ -86,7 +88,7 @@ CREATE INDEX IF NOT EXISTS idx_feed_generators_service
 # meaning as a change signal, and the table churns 148k dead tuples per sync for nothing.
 UPSERT = """
 INSERT INTO feed_generators
-    (uri, creator_did, display_name, description, service_did, first_seen, deleted_at, creator_status)
+    (uri, creator_did, display_name, description, service_did, first_seen, deleted_at, creator_status, skyfeed_builder)
 VALUES %s
 ON CONFLICT (uri) DO UPDATE SET
     creator_did    = EXCLUDED.creator_did,
@@ -96,14 +98,15 @@ ON CONFLICT (uri) DO UPDATE SET
     first_seen     = EXCLUDED.first_seen,
     deleted_at     = EXCLUDED.deleted_at,
     creator_status = EXCLUDED.creator_status,
+    skyfeed_builder = EXCLUDED.skyfeed_builder,
     synced_at      = now()
 WHERE (feed_generators.creator_did, feed_generators.display_name, feed_generators.description,
        feed_generators.service_did, feed_generators.first_seen, feed_generators.deleted_at,
-       feed_generators.creator_status)
+       feed_generators.creator_status, feed_generators.skyfeed_builder)
    IS DISTINCT FROM
       (EXCLUDED.creator_did, EXCLUDED.display_name, EXCLUDED.description,
        EXCLUDED.service_did, EXCLUDED.first_seen, EXCLUDED.deleted_at,
-       EXCLUDED.creator_status)
+       EXCLUDED.creator_status, EXCLUDED.skyfeed_builder)
 RETURNING (xmax = 0) AS inserted
 """
 
