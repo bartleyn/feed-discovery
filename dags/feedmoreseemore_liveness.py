@@ -10,7 +10,13 @@ Deploy: symlink or copy this file into ~/airflow/dags/ (matches how atproto-heal
 Set FEEDMORESEEMORE_DIR if the repo isn't at the default path below.
 
 Pipeline (linear):
-    sync_registry -> reprobe_liveness -> append_layout_incremental -> build_health_json -> deploy
+    sync_registry -> reprobe_liveness -> append_layout_incremental -> build_health_json
+      -> embed_all_feeds -> topics_live -> build_topic_layout -> build_serve_data -> upload_data_r2
+
+The site serves the TOPIC layout, derived from the cluster layout in public/data on every
+run, minus feeds that must not be served (unresponsive, archived, empty, tombstoned, or from
+an inactive account) in public/data_serve. A failed step skips the upload and leaves the last
+good layout live.
 
 append_layout_incremental is what keeps the MAP current, not just the allow-list: it puts
 newly-live feeds onto the layout by nearest-existing-cluster, without re-clustering. The
@@ -30,7 +36,11 @@ REPO = os.environ.get(
 FEED_DISCOVERY = os.path.join(REPO, "feed-discovery")
 FEED_EXPLORER = os.path.join(REPO, "feed-explorer")
 DATA_DIR = os.path.join(REPO, "feed-explorer", "public", "data")
-DIST_DIR = os.path.join(REPO, "feed-explorer", "dist", "data")
+TOPICS_DIR = os.path.join(REPO, "feed-explorer", "public", "data_topics")
+SERVE_DIR = os.path.join(REPO, "feed-explorer", "public", "data_serve")
+LABELS = os.path.join(REPO, "feed-explorer", "labels")   # paid label files are symlinks into FEEDS_DIR/topic_labels
+FEEDS_DIR = os.environ.get("FEEDS_DIR", "/Volumes/miniext/feeds")
+OLD_META = os.path.join(FEEDS_DIR, "relabel_2026-09-18", "feeds_meta.json")  # text the first paid labels saw
 
 # The pipeline scripts need numpy/psycopg2/anthropic, which live in the system Python's
 # user site-packages — NOT Airflow's venv. Pin an interpreter that has them (override with
@@ -103,47 +113,39 @@ with DAG(
         py("scripts.build_health_json", "--data", DATA_DIR, cwd=FEED_EXPLORER)
 
     @task()
-    def deploy():
-        # Static assets; copy into the built bundle the site serves (explorer.barn.city
-        # serves dist/ via `vite preview` under launchd job city.barn.feedexplorer).
-        # All four move now, not just the allow-list — append_layout rewrites the layout,
-        # meta and index too, and they must stay index-aligned with each other.
-        import gzip
+    def embed_new():
+        # Topic features for feeds the URI-keyed store has not seen. Local model, no API
+        # calls, incremental; a feed without an embedding would land in Unsorted.
+        py("scripts.embed_all_feeds", cwd=FEED_EXPLORER)
 
-        if not os.path.isdir(DIST_DIR):
-            return
-        for name in ("feeds_layout.bin", "feeds_meta.json",
-                     "feeds_index.json", "feeds_health.json"):
-            src = os.path.join(DATA_DIR, name)
-            if not os.path.isfile(src):
-                continue
-            dst = os.path.join(DIST_DIR, name)
-            subprocess.run(["cp", src, dst], check=True)
-            # The Vite build emits a .gz sibling for hosts serving precompressed assets
-            # (nginx gzip_static / Caddy). Refresh it here too, or they'd keep serving
-            # data from the last full build instead of this run's.
-            with open(dst, "rb") as fh:
-                raw = fh.read()
-            with gzip.open(f"{dst}.gz", "wb", compresslevel=9) as fh:
-                fh.write(raw)
+    @task()
+    def topics():
+        # Retrain the local classifier on the saved paid labels and label every row, then
+        # merge: corrections > answer key > labeller (+ second-model agreement) > classifier.
+        # Spends nothing: feeds it is unsure of stay Unsorted until a paid batch is run by hand.
+        args = ("--data", DATA_DIR, "--labels", LABELS, "--old-meta", OLD_META)
+        py("scripts.topics_live", *args, cwd=FEED_EXPLORER)
+        py("scripts.topics_live", *args, "--merge", cwd=FEED_EXPLORER)
+
+    @task()
+    def topic_layout():
+        # Topic groups over the cluster layout's positions; trending.bsky.app feeds forced
+        # into Trending (Bluesky). Copies the health file built above.
+        py("scripts.build_topic_layout", "--src", DATA_DIR, "--out", TOPICS_DIR,
+           "--labels", LABELS, "--topics", "feed_topics_live.jsonl", cwd=FEED_EXPLORER)
+
+    @task()
+    def serve_data():
+        # Drop feeds that must not be served; account status comes from sync_registry above.
+        py("scripts.build_serve_data", "--src", TOPICS_DIR, "--out", SERVE_DIR, cwd=FEED_EXPLORER)
 
     @task()
     def publish_r2():
-        # Push the same four artifacts to Cloudflare R2, which is where the Pages-hosted
-        # explorer reads them from (Pages caps assets at 25 MiB; feeds_meta.json is 23MB
-        # and growing, so data can't ship with the bundle).
-        #
-        # Runs ALONGSIDE deploy() rather than replacing it, deliberately: until DNS moves
-        # explorer.barn.city from the tunnel to Pages, the launchd `vite preview` job is
-        # still the live site and must keep getting fresh data. Drop deploy() after cutover.
-        #
-        # Credentials come from feed-discovery/.env, which the script loads itself — the
-        # same convention every other script here uses. Don't gate on os.environ from this
-        # process: an Airflow task inherits the scheduler's environment, and the scheduler
-        # is a launchd agent that has never read .env, so checking here would always skip.
-        # --skip-if-unconfigured lets the script exit 0 when no token is present, so this
-        # task stays green while the tunnel is still the live site.
-        py("scripts.upload_data_r2", "--data", DATA_DIR, "--skip-if-unconfigured",
-           cwd=FEED_EXPLORER)
+        # Push the served layout to Cloudflare R2, which the Pages-hosted explorer
+        # (explorer.barn.city) reads from; Pages caps assets at 25 MiB, so data can't ship
+        # with the bundle. Credentials come from feed-discovery/.env, which the script loads
+        # itself. A missing token now fails the task: R2 is the only place the site reads.
+        py("scripts.upload_data_r2", "--data", SERVE_DIR, cwd=FEED_EXPLORER)
 
-    sync_registry() >> reprobe() >> append_layout() >> build_allowlist() >> deploy() >> publish_r2()
+    (sync_registry() >> reprobe() >> append_layout() >> build_allowlist()
+     >> embed_new() >> topics() >> topic_layout() >> serve_data() >> publish_r2())
