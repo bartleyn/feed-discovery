@@ -10,7 +10,7 @@ Deploy: symlink or copy this file into ~/airflow/dags/ (matches how atproto-heal
 Set FEEDMORESEEMORE_DIR if the repo isn't at the default path below.
 
 Pipeline (linear):
-    sync_registry -> reprobe_liveness -> append_layout_incremental -> build_health_json
+    sync_registry -> sync_feed_likes -> reprobe_liveness -> append_layout_incremental -> build_health_json
       -> embed_all_feeds -> topics_live -> build_topic_layout -> build_serve_data -> upload_data_r2
 
 The site serves the TOPIC layout, derived from the cluster layout in public/data on every
@@ -85,6 +85,12 @@ with DAG(
         py("scripts.sync_registry")
 
     @task()
+    def sync_likes():
+        # Per-feed like counts (COUNT of atproto-health's feeds.feed_likes) into feedmoreseemore,
+        # the only source the layout scripts read likes from. ~3s, idempotent.
+        py("scripts.sync_feed_likes")
+
+    @task()
     def reprobe():
         # Probe the full registry, not just the layout — so newly-discovered feeds get
         # liveness and can enter future rebuilds. SINGLE SOURCE = atproto-health's live
@@ -147,5 +153,5 @@ with DAG(
         # itself. A missing token now fails the task: R2 is the only place the site reads.
         py("scripts.upload_data_r2", "--data", SERVE_DIR, cwd=FEED_EXPLORER)
 
-    (sync_registry() >> reprobe() >> append_layout() >> build_allowlist()
+    (sync_registry() >> sync_likes() >> reprobe() >> append_layout() >> build_allowlist()
      >> embed_new() >> topics() >> topic_layout() >> serve_data() >> publish_r2())
