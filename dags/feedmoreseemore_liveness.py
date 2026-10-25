@@ -10,7 +10,7 @@ Deploy: symlink or copy this file into ~/airflow/dags/ (matches how atproto-heal
 Set FEEDMORESEEMORE_DIR if the repo isn't at the default path below.
 
 Pipeline (linear):
-    sync_registry -> sync_feed_likes -> reprobe_liveness -> append_layout_incremental -> build_health_json
+    sync_registry -> sync_feed_likes -> reprobe_liveness -> probe_logged_in -> append_layout_incremental -> build_health_json
       -> embed_all_feeds -> topics_live -> build_topic_layout -> build_serve_data -> upload_data_r2
 
 The site serves the TOPIC layout, derived from the cluster layout in public/data on every
@@ -101,7 +101,14 @@ with DAG(
         # probed_at), so each run does new + stale only. Resumable across days; PG feed_health
         # is upserted continuously.
         py("scripts.reprobe_liveness", "--data", DATA_DIR,
-           "--source", "registry", "--refresh-older-than", "3", cwd=FEED_EXPLORER)
+           "--source", "registry", "--refresh-older-than", "3", "--handoff-logged-in", cwd=FEED_EXPLORER)
+
+    @task()
+    def probe_logged_in():
+        # Feeds the logged-out probe cannot judge (login-required, <2 posts, or a 502 "feed
+        # unavailable"), probed signed in; build_health_json judges them on this. ~5h for a full
+        # round, then only feeds not sampled in the last 3 days.
+        py("scripts.probe_logged_in", cwd=FEED_EXPLORER)
 
     @task()
     def append_layout():
@@ -153,5 +160,5 @@ with DAG(
         # itself. A missing token now fails the task: R2 is the only place the site reads.
         py("scripts.upload_data_r2", "--data", SERVE_DIR, cwd=FEED_EXPLORER)
 
-    (sync_registry() >> sync_likes() >> reprobe() >> append_layout() >> build_allowlist()
+    (sync_registry() >> sync_likes() >> reprobe() >> probe_logged_in() >> append_layout() >> build_allowlist()
      >> embed_new() >> topics() >> topic_layout() >> serve_data() >> publish_r2())
