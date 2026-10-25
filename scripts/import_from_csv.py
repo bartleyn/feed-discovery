@@ -11,10 +11,11 @@ Run on the host (not in the container):
 import csv
 import os
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from store.database import SessionLocal
-from store.models import Feed, ArmState
+from store.models import ArmState, Feed
 
 CSV_PATH = os.path.join(os.path.dirname(__file__), "popular_feeds.csv")
 DEFAULT_USER_DID = os.environ.get("DEFAULT_USER_DID", "")
