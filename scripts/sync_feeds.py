@@ -12,6 +12,7 @@ and bootstraps arm states for the default user.
 import os
 import sqlite3
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from scripts.feed_utils import compute_priority_boost

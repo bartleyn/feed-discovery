@@ -6,9 +6,9 @@ Usage:
     python -m scripts.create_section_posts
 """
 
+from bot.section_poster import ensure_section_post
 from store import SessionLocal
 from store.models import Feed
-from bot.section_poster import ensure_section_post
 
 
 def main():

@@ -7,14 +7,16 @@ fetches their generator metadata, and upserts into the feeds table.
     docker compose exec api python -m scripts.import_my_feeds
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from atproto import Client
+
 from api.config import settings
 from store.database import SessionLocal
-from store.models import Feed, ArmState
+from store.models import ArmState, Feed
 
 
 def extract_feed_uris(preferences: list[dict]) -> list[str]:
