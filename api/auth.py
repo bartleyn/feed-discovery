@@ -7,7 +7,13 @@ from atproto_identity.did.resolver import DidResolver
 
 _resolver = DidResolver()
 
-_EXPECTED_LXM = "app.bsky.feed.getFeedSkeleton"
+# Lexicon method ids the AppView stamps into the `lxm` claim. Each endpoint
+# verifies against its own, so a token minted for one cannot replay on another.
+LXM_GET_FEED_SKELETON = "app.bsky.feed.getFeedSkeleton"
+LXM_SEND_INTERACTIONS = "app.bsky.feed.sendInteractions"
+
+# Allow a little clock drift between the AppView and us before discarding token
+_CLOCK_SKEW_SECONDS = 30
 
 
 def _b64url_decode(s: str) -> bytes:
@@ -17,7 +23,14 @@ def _b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s)
 
 
-def verify_service_jwt(token: str, expected_aud: str) -> str:
+def bearer_token(authorization: str | None) -> str | None:
+    """Extract the token from an `Authorization: Bearer ...` header, else None."""
+    if authorization and authorization.startswith("Bearer "):
+        return authorization.removeprefix("Bearer ").strip() or None
+    return None
+
+
+def verify_service_jwt(token: str, expected_aud: str, expected_lxm: str) -> str:
     """Verify an AT Protocol service JWT and return the caller's DID.
 
     Raises ValueError with a reason string on any failure — callers should
@@ -41,10 +54,10 @@ def verify_service_jwt(token: str, expected_aud: str) -> str:
         raise ValueError("missing iss claim")
     if aud != expected_aud:
         raise ValueError(f"wrong aud: expected {expected_aud!r}, got {aud!r}")
-    if exp < time.time():
+    if exp + _CLOCK_SKEW_SECONDS < time.time():
         raise ValueError("JWT expired")
-    if lxm != _EXPECTED_LXM:
-        raise ValueError(f"wrong lxm: {lxm!r}")
+    if lxm != expected_lxm:
+        raise ValueError(f"wrong lxm: expected {expected_lxm!r}, got {lxm!r}")
 
     did_key = _resolver.resolve_atproto_key(iss)
     if not did_key:

@@ -91,12 +91,14 @@ def _html(title: str, body: str) -> str:
 </html>"""
 
 
-def _reward_cell(reward) -> str:
-    if reward is None:
+def _reward_cell(imp: Impression) -> str:
+    if imp.rewarded_at is None:
         return '<span class="pending">pending</span>'
-    if reward > 0:
-        return f'<span class="reward-hi">{reward:.3f}</span>'
-    return '<span class="reward-lo">0.000</span>'
+    if imp.reward is None:
+        return '<span class="dim">unseen</span>'
+    if imp.reward > 0:
+        return f'<span class="reward-hi">{imp.reward:.1f}</span>'
+    return '<span class="reward-lo">0.0</span>'
 
 
 def _short_did(did: str) -> str:
@@ -142,8 +144,10 @@ def set_boost(
 def _global_view(db: Session) -> HTMLResponse:
     total_feeds = db.query(func.count(Feed.feed_uri)).scalar()
     total_impressions = db.query(func.count(Impression.id)).scalar()
+    closed = db.query(func.count(Impression.id)).filter(Impression.rewarded_at.isnot(None)).scalar()
     rewarded = db.query(func.count(Impression.id)).filter(Impression.reward.isnot(None)).scalar()
-    pending = total_impressions - rewarded
+    unseen = closed - rewarded
+    pending = total_impressions - closed
     avg_reward = db.query(func.avg(Impression.reward)).filter(Impression.reward.isnot(None)).scalar()
     distinct_users = db.query(func.count(func.distinct(Impression.user_did))).scalar()
 
@@ -153,9 +157,10 @@ def _global_view(db: Session) -> HTMLResponse:
       <div class="stat"><div class="stat-val">{distinct_users}</div><div class="stat-lbl">users</div></div>
       <div class="stat"><div class="stat-val">{total_feeds}</div><div class="stat-lbl">feeds in registry</div></div>
       <div class="stat"><div class="stat-val">{total_impressions}</div><div class="stat-lbl">total impressions</div></div>
-      <div class="stat"><div class="stat-val">{rewarded}</div><div class="stat-lbl">rewarded</div></div>
+      <div class="stat"><div class="stat-val">{rewarded}</div><div class="stat-lbl">rewarded (seen)</div></div>
+      <div class="stat"><div class="stat-val">{unseen}</div><div class="stat-lbl">closed unseen</div></div>
       <div class="stat"><div class="stat-val">{pending}</div><div class="stat-lbl">pending reward</div></div>
-      <div class="stat"><div class="stat-val">{f"{avg_reward:.3f}" if avg_reward else "—"}</div><div class="stat-lbl">avg reward (global)</div></div>
+      <div class="stat"><div class="stat-val">{f"{avg_reward:.3f}" if avg_reward else "—"}</div><div class="stat-lbl">avg reward (seen)</div></div>
     </div>"""
 
     # Per-user summary
@@ -253,10 +258,13 @@ def _user_view(user_did: str, db: Session) -> HTMLResponse:
 
     # Summary stats for this user
     total = db.query(func.count(Impression.id)).filter(Impression.user_did == user_did).scalar()
+    closed = db.query(func.count(Impression.id)).filter(
+        Impression.user_did == user_did, Impression.rewarded_at.isnot(None)
+    ).scalar()
     rewarded = db.query(func.count(Impression.id)).filter(
         Impression.user_did == user_did, Impression.reward.isnot(None)
     ).scalar()
-    pending = total - rewarded
+    pending = total - closed
     avg_reward = db.query(func.avg(Impression.reward)).filter(
         Impression.user_did == user_did, Impression.reward.isnot(None)
     ).scalar()
@@ -270,9 +278,10 @@ def _user_view(user_did: str, db: Session) -> HTMLResponse:
     <p class="dim" style="font-size:11px; word-break:break-all">{user_did}</p>
     <div class="summary">
       <div class="stat"><div class="stat-val">{total}</div><div class="stat-lbl">total impressions</div></div>
-      <div class="stat"><div class="stat-val">{rewarded}</div><div class="stat-lbl">rewarded</div></div>
+      <div class="stat"><div class="stat-val">{rewarded}</div><div class="stat-lbl">rewarded (seen)</div></div>
+      <div class="stat"><div class="stat-val">{closed - rewarded}</div><div class="stat-lbl">closed unseen</div></div>
       <div class="stat"><div class="stat-val">{pending}</div><div class="stat-lbl">pending reward</div></div>
-      <div class="stat"><div class="stat-val">{f"{avg_reward:.3f}" if avg_reward else "—"}</div><div class="stat-lbl">avg reward</div></div>
+      <div class="stat"><div class="stat-val">{f"{avg_reward:.3f}" if avg_reward else "—"}</div><div class="stat-lbl">avg reward (seen)</div></div>
       <div class="stat"><div class="stat-val">{last_seen.strftime("%m-%d %H:%M") if last_seen else "—"}</div><div class="stat-lbl">last seen</div></div>
     </div>"""
 
@@ -364,7 +373,7 @@ def _user_view(user_did: str, db: Session) -> HTMLResponse:
           <td>{imp.shown_at.strftime("%m-%d %H:%M")}</td>
           <td>{display_name}</td>
           <td>{imp.posts_shown}</td>
-          <td>{_reward_cell(imp.reward)}</td>
+          <td>{_reward_cell(imp)}</td>
         </tr>"""
 
     impressions_section = f"""

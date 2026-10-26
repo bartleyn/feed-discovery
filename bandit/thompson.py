@@ -61,6 +61,17 @@ def rank_feeds(user_did: str, feeds: list[Feed], db: Session) -> list[str]:
     return [uri for uri, _ in scores]
 
 
+def rank_feeds_anonymous(feeds: list[Feed]) -> list[str]:
+    """Ranking for requests with no verified user: a boost-weighted shuffle.
+
+    """
+    scores = [
+        (feed.feed_uri, float(np.random.random()) * feed.priority_boost) for feed in feeds
+    ]
+    scores.sort(key=lambda x: -x[1])
+    return [uri for uri, _ in scores]
+
+
 def update_arm(user_did: str, feed_uri: str, reward: float, db: Session) -> None:
     """Bayesian update: alpha += reward, beta += (1 - reward)."""
     arm = get_or_init_arm(user_did, feed_uri, db)

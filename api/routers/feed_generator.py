@@ -4,11 +4,6 @@ GET /xrpc/app.bsky.feed.getFeedSkeleton
 Calls feeds in Thompson Sampling order, logs impressions + chunk_posts,
 and returns a flat post slate to bsky.app.
 
-Cursor encodes which feed URIs have already been shown in this session as a
-pipe-delimited string. Each page pulls the next N highest-ranked feeds from
-the remainder. When all feeds are exhausted the cursor is omitted, and
-bsky.app will start a fresh session on next pull.
-
 Chunks are kept atomic: the response is assembled whole-chunk-at-a-time up to
 `limit`, and a chunk that doesn't fit is deferred to the next page (excluded
 from the cursor) rather than truncated, so a section post is never separated
@@ -25,13 +20,14 @@ from itertools import islice
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from api.auth import verify_service_jwt
+from api.auth import LXM_GET_FEED_SKELETON, bearer_token, verify_service_jwt
 from api.config import settings
-from bandit.thompson import rank_feeds, update_arm
+from bandit.thompson import rank_feeds, rank_feeds_anonymous
 from bot.intro_post import ensure_intro_post
 from bot.section_poster import ensure_section_post
 from ingestion import atproto_client
 from ingestion.caller import FeedChunk
+from ingestion.feed_health import is_quarantined, record_fetch_outcome
 from store import get_db
 from store.models import Feed, Impression, ChunkPost
 
@@ -41,9 +37,6 @@ router = APIRouter(tags=["feed-generator"])
 CURSOR_SEP = "|"
 
 # Separates the source feed URI from the impression id inside feedContext.
-# at-URIs never contain "|", so the encoding splits unambiguously and the
-# impression id pins attribution to the exact chunk even if the client
-# reorders posts before reporting interactions.
 CONTEXT_SEP = "|"
 
 _HARMFUL_TERMS = {"rape", "noncon", "non-con", "dubcon", "dub-con"}
@@ -84,49 +77,55 @@ def get_feed(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.removeprefix("Bearer ")
+    # if no token go anonymous
+    token = bearer_token(authorization)
+    user_did: str | None = None
+    if token is not None:
         try:
-            user_did = verify_service_jwt(token, settings.feed_generator_did)
+            user_did = verify_service_jwt(token, settings.feed_generator_did, LXM_GET_FEED_SKELETON)
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc))
-    else:
-        user_did = settings.default_user_did
+    anonymous = user_did is None
 
-    feeds = db.query(Feed).all()
+    now = datetime.now(timezone.utc)
+    all_feeds = db.query(Feed).all()
+    # Feeds that keep returning nothing sit out for a retry window instead of being ranked and
+    # penalised on every request.
+    feeds = [
+        f for f in all_feeds
+        if not is_quarantined(
+            f, now, settings.feed_health_failure_threshold, settings.feed_health_retry_hours
+        )
+    ]
     if not feeds:
         return {"feed": []}
 
-    # Cursor encodes all feed URIs tried so far this session — skip them so
-    # each scroll page shows fresh feed sources. Reset when cursor is absent.
+    # Cursor encodes all feed URIs tried so far this session
     seen_uris: set[str] = set(cursor.split(CURSOR_SEP)) if cursor else set()
 
     feed_map = {f.feed_uri: f for f in feeds}
 
     slate: list[dict] = []
 
-    # First page only: one intro post at the top describing what this feed is.
+    # First page only: add intro post
     if cursor is None:
         intro_uri = ensure_intro_post(db)
         if intro_uri:
             slate.append({"post": intro_uri, "feedContext": feed})
-    now = datetime.now(timezone.utc)
     # One reqId per getFeedSkeleton call. Stamped on every impression created
-    # below and returned at the top of the response, so interactions can be
-    # grouped back to this exact request.
     req_id = uuid.uuid4().hex
     tried_uris: list[str] = []
     batch_limit = 4  # max batches per request to bound latency on pathological cases
 
-    # (feed_row, posts) units collected this request, assembled into the
-    # response at chunk boundaries below so the limit cut never separates a
-    # section post from the posts above it.
     pending: list[tuple[Feed, list]] = []
     slate_post_uris: set[str] = set()
 
     for _batch in range(batch_limit):
-        # Re-rank each batch so empty-penalty updates from this request take effect
-        ranked_uris = rank_feeds(user_did, feeds, db)
+        # Fresh Thompson draw per batch; the previous batch's failures have
+        # already been recorded on the feed rows, so quarantine applies.
+        ranked_uris = (
+            rank_feeds_anonymous(feeds) if anonymous else rank_feeds(user_did, feeds, db)
+        )
         candidates = [feed_map[uri] for uri in ranked_uris if uri not in seen_uris]
         if not candidates:
             break
@@ -174,10 +173,12 @@ def get_feed(
 
         # Strip the section posts that some feeds pick up from this feed
         known_section_uris: set[str] = {
-            f.section_post_uri for f in feeds if f.section_post_uri
+            f.section_post_uri for f in all_feeds if f.section_post_uri
         }
 
         for feed_row, chunk in zip(batch, chunks):
+            record_fetch_outcome(feed_row, bool(chunk.posts), now)
+
             # bsky.app silently drops URIs it has already rendered, so dedupe here
             posts = [
                 p for p in chunk.posts
@@ -189,7 +190,6 @@ def get_feed(
 
             if not posts:
                 logger.debug("empty chunk: feed=%s user=%s", feed_row.feed_uri, user_did)
-                update_arm(user_did, feed_row.feed_uri, reward=0.0, db=db)
                 continue
 
             logger.debug(
@@ -204,11 +204,7 @@ def get_feed(
         if pending:
             break  # got posts — stop fetching more batches
 
-    # Assemble whole chunks up to `limit`, logging only what is actually
-    # returned. A chunk that doesn't fit is deferred to the next page (and
-    # dropped from the cursor so it gets served then) — truncating it would
-    # cut off its section post and leave its posts rendering under the next
-    # chunk's header.
+    # A chunk that doesn't fit is deferred to the next page
     deferred_uris: set[str] = set()
     chunks_included = 0
     for idx, (feed_row, posts) in enumerate(pending):
@@ -230,29 +226,34 @@ def get_feed(
             deferred_uris = {f.feed_uri for f, _ in pending[idx + 1:]}
 
         chunks_included += 1
-        impression = Impression(
-            user_did=user_did,
-            feed_uri=feed_row.feed_uri,
-            shown_at=now,
-            posts_shown=len(posts),
-            req_id=req_id,
-        )
-        db.add(impression)
-        db.flush()
+        impression: Impression | None = None
+        if not anonymous:
+            impression = Impression(
+                user_did=user_did,
+                feed_uri=feed_row.feed_uri,
+                shown_at=now,
+                posts_shown=len(posts),
+                req_id=req_id,
+            )
+            db.add(impression)
+            db.flush()
 
         for position, post in enumerate(posts):
-            db.add(ChunkPost(
-                impression_id=impression.id,
-                post_uri=post.uri,
-                post_age_seconds=post.age_seconds,
-                position=len(slate) + position,
-            ))
+            if impression is not None:
+                db.add(ChunkPost(
+                    impression_id=impression.id,
+                    post_uri=post.uri,
+                    post_age_seconds=post.age_seconds,
+                    position=len(slate) + position,
+                ))
             # feedContext = "<feed_uri>|<impression_id>" so an interaction maps
             # back to the exact impression regardless of client reordering.
-            slate.append({
-                "post": post.uri,
-                "feedContext": f"{feed_row.feed_uri}{CONTEXT_SEP}{impression.id}",
-            })
+            # Anonymous slates carry the bare feed_uri: there is no impression.
+            context = (
+                f"{feed_row.feed_uri}{CONTEXT_SEP}{impression.id}"
+                if impression is not None else feed_row.feed_uri
+            )
+            slate.append({"post": post.uri, "feedContext": context})
 
         if section_uri:
             logger.debug(
@@ -272,7 +273,8 @@ def get_feed(
 
     logger.info(
         "getFeed: user=%s batches=%d tried=%d posts=%d deferred=%d",
-        user_did, _batch + 1, len(tried_uris), len(slate), len(deferred_uris),
+        "anonymous" if anonymous else user_did,
+        _batch + 1, len(tried_uris), len(slate), len(deferred_uris),
     )
 
     response: dict = {"feed": slate, "reqId": req_id}

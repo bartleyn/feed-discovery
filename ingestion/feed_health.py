@@ -7,12 +7,38 @@ crosses the configured threshold.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from store import SessionLocal
 from store.models import Feed
 
 logger = logging.getLogger(__name__)
+
+
+def record_fetch_outcome(feed: Feed, got_posts: bool, now: datetime) -> None:
+    """Update a feed's liveness counters after any attempt to fetch from it.
+
+    """
+    feed.last_checked_at = now
+    if got_posts:
+        feed.consecutive_failures = 0
+    else:
+        feed.consecutive_failures = (feed.consecutive_failures or 0) + 1
+
+
+def is_quarantined(feed: Feed, now: datetime, threshold: int, retry_hours: float) -> bool:
+    """True when the feed should be skipped for ranking.
+
+    """
+    failures = feed.consecutive_failures or 0
+    if failures < threshold:
+        return False
+    last = feed.last_checked_at
+    if last is None:
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return now - last < timedelta(hours=retry_hours)
 
 
 def check_all_feeds() -> None:
@@ -39,17 +65,14 @@ def check_all_feeds() -> None:
                 logger.warning("Health check error for %s: %s", feed.feed_uri, exc)
                 healthy = False
 
-            feed.last_checked_at = now
-            if healthy:
-                if feed.consecutive_failures > 0:
-                    logger.info(
-                        "Feed recovered: %s (was %d consecutive failures)",
-                        feed.display_name,
-                        feed.consecutive_failures,
-                    )
-                feed.consecutive_failures = 0
-            else:
-                feed.consecutive_failures = (feed.consecutive_failures or 0) + 1
+            if healthy and (feed.consecutive_failures or 0) > 0:
+                logger.info(
+                    "Feed recovered: %s (was %d consecutive failures)",
+                    feed.display_name,
+                    feed.consecutive_failures,
+                )
+            record_fetch_outcome(feed, healthy, now)
+            if not healthy:
                 if feed.consecutive_failures >= settings.feed_health_failure_threshold:
                     logger.warning(
                         "Feed unhealthy: %s (%d consecutive empty/error responses)",
