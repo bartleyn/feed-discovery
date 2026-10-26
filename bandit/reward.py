@@ -18,29 +18,43 @@ from store.models import Impression, Interaction
 
 logger = logging.getLogger(__name__)
 
-ACTION_WEIGHTS = {
-    "like":         1,
-    "repost":       2,
-    "reply":        3,
-    "quote":        2,
-    "request_more": 5,
-    "request_less": 0,
-}
+POSITIVE_ACTIONS = frozenset({"like", "repost", "reply", "quote", "request_more"})
+NEGATIVE_ACTIONS = frozenset({"request_less"})
+EXPOSURE_ACTIONS = frozenset({"seen"})
 
 
-def _compute_reward(impression: Impression, db: Session) -> float:
+def reward_from_actions(actions) -> float | None:
+    """Map the actions logged against one impression to a bandit outcome.
+
+    1.0  — the user engaged with the chunk (or asked for more)
+    0.0  — the user saw the chunk and did nothing, or asked for less
+    None — no evidence the chunk was ever on screen: censored, not a failure.
+    """
+    seen_actions = set(actions)
+    if seen_actions & POSITIVE_ACTIONS:
+        return 1.0
+    if seen_actions & NEGATIVE_ACTIONS:
+        return 0.0
+    if seen_actions & EXPOSURE_ACTIONS:
+        return 0.0
+    return None
+
+
+def _compute_reward(impression: Impression, db: Session) -> float | None:
     interactions = (
-        db.query(Interaction)
+        db.query(Interaction.action)
         .filter_by(impression_id=impression.id)
         .all()
     )
-    raw = sum(ACTION_WEIGHTS.get(i.action, 0) for i in interactions)
-    # Normalise: max plausible score = posts_shown * max_weight (3) * some buffer (10)
-    return min(raw / max(impression.posts_shown, 1) / 10, 1.0)
+    return reward_from_actions(row.action for row in interactions)
 
 
 def process_due_impressions() -> None:
-    """Called by APScheduler every minute. Processes impressions whose reward window has closed."""
+    """Called by APScheduler every minute. Processes impressions whose reward window has closed.
+
+    Every due impression is closed by stamping `rewarded_at`. Only those with
+    evidence of exposure move an arm; censored ones keep `reward = NULL`.
+    """
     db: Session = SessionLocal()
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(
@@ -49,26 +63,37 @@ def process_due_impressions() -> None:
         due = (
             db.query(Impression)
             .filter(
-                Impression.reward.is_(None),
+                Impression.rewarded_at.is_(None),
                 Impression.shown_at <= cutoff.replace(tzinfo=None),
             )
             .all()
         )
 
+        closed = rewarded = censored = 0
         for impression in due:
             try:
                 reward = _compute_reward(impression, db)
                 impression.reward = reward
                 impression.rewarded_at = datetime.now(timezone.utc)
                 db.commit()
+                closed += 1
+                if reward is None:
+                    censored += 1
+                    continue
                 update_arm(impression.user_did, impression.feed_uri, reward, db)
+                rewarded += 1
                 logger.info(
-                    "Rewarded impression %d (feed=%s reward=%.3f)",
+                    "Rewarded impression %d (feed=%s reward=%.1f)",
                     impression.id, impression.feed_uri, reward,
                 )
             except Exception as exc:
                 db.rollback()
                 logger.exception("Failed to process impression %d: %s", impression.id, exc)
+        if closed:
+            logger.info(
+                "Reward pass: closed=%d rewarded=%d censored(unseen)=%d",
+                closed, rewarded, censored,
+            )
     finally:
         db.close()
 

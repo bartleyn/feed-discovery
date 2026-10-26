@@ -12,10 +12,11 @@ explicit requestMore / requestLess events, immediately update the arm.
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from api.auth import LXM_SEND_INTERACTIONS, bearer_token, verify_service_jwt
 from api.config import settings
 from bandit.thompson import update_arm
 from store import get_db
@@ -104,7 +105,7 @@ def _resolve_chunk_post(db, item: "InteractionItem", user_did: str):
             ChunkPost.post_uri == item.item,
             Impression.user_did == user_did,
             Impression.feed_uri == feed_uri,
-            Impression.reward.is_(None),
+            Impression.rewarded_at.is_(None),
         )
         .order_by(Impression.shown_at.desc())
         .first()
@@ -113,8 +114,22 @@ def _resolve_chunk_post(db, item: "InteractionItem", user_did: str):
 
 
 @router.post("/xrpc/app.bsky.feed.sendInteractions")
-def send_interactions(body: SendInteractionsIn, db: Session = Depends(get_db)):
-    user_did = settings.default_user_did
+def send_interactions(
+    body: SendInteractionsIn,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    # The AppView forwards interactions with a service JWT 
+    token = bearer_token(authorization)
+    if token is None:
+        logger.warning("sendInteractions without bearer token rejected")
+        raise HTTPException(status_code=401, detail="missing service token")
+    try:
+        user_did = verify_service_jwt(token, settings.feed_generator_did, LXM_SEND_INTERACTIONS)
+    except ValueError as exc:
+        logger.warning("sendInteractions token rejected: %s", exc)
+        raise HTTPException(status_code=401, detail=str(exc))
+
     now = datetime.now(timezone.utc)
 
     for item in body.interactions:

@@ -1,0 +1,14 @@
+# Local development overlay: live-reload against the checkout.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#   make dev
+#
+# Deliberately a separate file (not docker-compose.override.yml, which compose
+# loads automatically) so the default `docker compose up` is the hardened,
+# no-bind-mount configuration.
+services:
+  api:
+    volumes:
+      - .:/app
+      - ../jetstream-activity.db:/data/jetstream-activity.db:ro
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8391 --reload
