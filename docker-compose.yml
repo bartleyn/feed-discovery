@@ -51,15 +51,9 @@ services:
     ports:
       - "8391:8391"
     volumes:
-      # Read-only data input for `make sync-feeds`; not a secret.
+      - .:/app
       - ../jetstream-activity.db:/data/jetstream-activity.db:ro
-    deploy:
-      resources:
-        limits:
-          memory: 1g
-    logging:
-      driver: json-file
-      options: { max-size: "20m", max-file: "3" }
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8391 --reload
 
 volumes:
   pgdata:

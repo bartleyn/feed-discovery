@@ -15,7 +15,8 @@ Pipeline (linear):
 
 The site serves the TOPIC layout, derived from the cluster layout in public/data on every
 run, minus feeds that must not be served (unresponsive, archived, empty, tombstoned, or from
-an inactive account) in public/data_serve. A failed step skips the upload and leaves the last
+an inactive or moderated account) in public/data_serve; feedmoreseemore_moderation refreshes
+that last filter hourly. A failed step skips the upload and leaves the last
 good layout live.
 
 append_layout_incremental is what keeps the MAP current, not just the allow-list: it puts
@@ -48,6 +49,8 @@ OLD_META = os.path.join(FEEDS_DIR, "relabel_2026-09-18", "feeds_meta.json")  # t
 PYTHON = os.environ.get("FEEDMORESEEMORE_PYTHON", "/Library/Developer/CommandLineTools/usr/bin/python3")
 
 default_args = {"retries": 1, "retry_delay": timedelta(minutes=10)}
+# 1 slot shared with feedmoreseemore_moderation: one writer of feed_generators / data_topics / data_serve / R2 at a time
+PUBLISH_POOL = "feedmoreseemore_publish"
 
 
 def py(module: str, *args: str, cwd: str = FEED_DISCOVERY) -> None:
@@ -74,7 +77,7 @@ with DAG(
     tags=["feedmoreseemore", "liveness"],
 ) as dag:
 
-    @task()
+    @task(pool=PUBLISH_POOL)
     def sync_registry():
         # Mirror atproto-health's feed-generator registry into feedmoreseemore's own database
         # BEFORE anything reads it. Downstream tasks queried activity.feed_generators across
@@ -140,19 +143,19 @@ with DAG(
         py("scripts.topics_live", *args, cwd=FEED_EXPLORER)
         py("scripts.topics_live", *args, "--merge", cwd=FEED_EXPLORER)
 
-    @task()
+    @task(pool=PUBLISH_POOL)
     def topic_layout():
         # Topic groups over the cluster layout's positions; trending.bsky.app feeds forced
         # into Trending (Bluesky). Copies the health file built above.
         py("scripts.build_topic_layout", "--src", DATA_DIR, "--out", TOPICS_DIR,
            "--labels", LABELS, "--topics", "feed_topics_live.jsonl", cwd=FEED_EXPLORER)
 
-    @task()
+    @task(pool=PUBLISH_POOL)
     def serve_data():
         # Drop feeds that must not be served; account status comes from sync_registry above.
         py("scripts.build_serve_data", "--src", TOPICS_DIR, "--out", SERVE_DIR, cwd=FEED_EXPLORER)
 
-    @task()
+    @task(pool=PUBLISH_POOL)
     def publish_r2():
         # Push the served layout to Cloudflare R2, which the Pages-hosted explorer
         # (explorer.barn.city) reads from; Pages caps assets at 25 MiB, so data can't ship

@@ -46,11 +46,19 @@ BATCH = 5000
 # creator's account status from atproto-health's PDS scan; NULL = active (the scan lists only inactive repos).
 # A status counts only if scanned on the creator's CURRENT PDS: migrated accounts read "deactivated" on the old one.
 SOURCE = """
-SELECT {}, s.status AS creator_status, f.skyfeed_builder::text AS skyfeed_builder
+SELECT {}, s.status AS creator_status, f.skyfeed_builder::text AS skyfeed_builder,
+       m.action AS creator_mod_action
 FROM activity.feed_generators f
 LEFT JOIN plc.plc_did_pds p ON p.did = f.creator_did
 LEFT JOIN plc.did_repo_status s
        ON s.did = f.creator_did AND rtrim(s.pds_url, '/') = rtrim(p.pds_url, '/')
+-- creator's strongest live Bluesky moderation action (atproto-health 015); NULL = none
+LEFT JOIN LATERAL (
+    SELECT a.action FROM plc.bsky_mod_actions a
+    WHERE a.did = f.creator_did AND (a.expires_at IS NULL OR a.expires_at > now())
+    ORDER BY array_position(ARRAY['!takedown', '!suspend', '!hide'], a.action)
+    LIMIT 1
+) m ON true
 """.format(", ".join("f." + c for c in COLS))
 
 DDL = """
@@ -72,6 +80,8 @@ ALTER TABLE feed_generators ADD COLUMN IF NOT EXISTS service_did text;
 ALTER TABLE feed_generators ADD COLUMN IF NOT EXISTS creator_status text;
 -- SkyFeed recipe (inputs, regex filters, sort); JSON null = read, none; NULL = not read (atproto-health 014)
 ALTER TABLE feed_generators ADD COLUMN IF NOT EXISTS skyfeed_builder jsonb;
+-- !takedown / !suspend / !hide from mod.bsky.app; NULL when the creator has none
+ALTER TABLE feed_generators ADD COLUMN IF NOT EXISTS creator_mod_action text;
 CREATE INDEX IF NOT EXISTS idx_feed_generators_creator
     ON feed_generators (creator_did);
 -- Every consumer filters `deleted_at IS NULL`; a partial index keeps that scan off the
@@ -88,7 +98,8 @@ CREATE INDEX IF NOT EXISTS idx_feed_generators_service
 # meaning as a change signal, and the table churns 148k dead tuples per sync for nothing.
 UPSERT = """
 INSERT INTO feed_generators
-    (uri, creator_did, display_name, description, service_did, first_seen, deleted_at, creator_status, skyfeed_builder)
+    (uri, creator_did, display_name, description, service_did, first_seen, deleted_at, creator_status, skyfeed_builder,
+     creator_mod_action)
 VALUES %s
 ON CONFLICT (uri) DO UPDATE SET
     creator_did    = EXCLUDED.creator_did,
@@ -99,14 +110,15 @@ ON CONFLICT (uri) DO UPDATE SET
     deleted_at     = EXCLUDED.deleted_at,
     creator_status = EXCLUDED.creator_status,
     skyfeed_builder = EXCLUDED.skyfeed_builder,
+    creator_mod_action = EXCLUDED.creator_mod_action,
     synced_at      = now()
 WHERE (feed_generators.creator_did, feed_generators.display_name, feed_generators.description,
        feed_generators.service_did, feed_generators.first_seen, feed_generators.deleted_at,
-       feed_generators.creator_status, feed_generators.skyfeed_builder)
+       feed_generators.creator_status, feed_generators.skyfeed_builder, feed_generators.creator_mod_action)
    IS DISTINCT FROM
       (EXCLUDED.creator_did, EXCLUDED.display_name, EXCLUDED.description,
        EXCLUDED.service_did, EXCLUDED.first_seen, EXCLUDED.deleted_at,
-       EXCLUDED.creator_status, EXCLUDED.skyfeed_builder)
+       EXCLUDED.creator_status, EXCLUDED.skyfeed_builder, EXCLUDED.creator_mod_action)
 RETURNING (xmax = 0) AS inserted
 """
 
@@ -176,14 +188,16 @@ def sync(dry_run: bool = False, prune: bool = False) -> None:
 
         with dst.cursor() as cur:
             cur.execute("SELECT count(*) FILTER (WHERE deleted_at IS NULL), count(*), "
-                        "count(*) FILTER (WHERE deleted_at IS NULL AND creator_status IS NOT NULL) "
+                        "count(*) FILTER (WHERE deleted_at IS NULL AND creator_status IS NOT NULL), "
+                        "count(*) FILTER (WHERE deleted_at IS NULL AND creator_mod_action IS NOT NULL) "
                         "FROM feed_generators")
-            live, total, inactive = cur.fetchone()
+            live, total, inactive, moderated = cur.fetchone()
 
     print("scanned {:,} | inserted {:,} | updated {:,}{}".format(
         seen, ins, upd, " | pruned {:,}".format(gone) if prune else ""))
     print("feedmoreseemore.feed_generators: {:,} rows ({:,} live, {:,} tombstoned; "
-          "{:,} live feeds from inactive accounts)".format(total, live, total - live, inactive))
+          "{:,} live feeds from inactive accounts, {:,} from moderated accounts)"
+          .format(total, live, total - live, inactive, moderated))
 
 
 def _flush(cur, batch):
