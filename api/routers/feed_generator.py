@@ -1,7 +1,7 @@
 """
 GET /xrpc/app.bsky.feed.getFeedSkeleton
 
-Calls feeds in Thompson Sampling order, logs impressions + chunk_posts,
+Calls feeds in linear-TS + MMR order, logs impressions + chunk_posts,
 and returns a flat post slate to bsky.app.
 
 Chunks are kept atomic: the response is assembled whole-chunk-at-a-time up to
@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from api.auth import LXM_GET_FEED_SKELETON, bearer_token, verify_service_jwt
 from api.config import settings
-from bandit.thompson import rank_feeds, rank_feeds_anonymous
+from bandit.linear_ts import rank_feeds
 from bot.intro_post import ensure_intro_post
 from bot.section_poster import ensure_section_post
 from ingestion import atproto_client
@@ -121,16 +121,13 @@ def get_feed(
     slate_post_uris: set[str] = set()
 
     for _batch in range(batch_limit):
-        # Fresh Thompson draw per batch; the previous batch's failures have
-        # already been recorded on the feed rows, so quarantine applies.
-        ranked_uris = (
-            rank_feeds_anonymous(feeds) if anonymous else rank_feeds(user_did, feeds, db)
-        )
-        candidates = [feed_map[uri] for uri in ranked_uris if uri not in seen_uris]
-        if not candidates:
+        # Fresh Thompson draw per batch over feeds not yet tried this session
+        unseen = [f for f in feeds if f.feed_uri not in seen_uris]
+        ranked_uris = rank_feeds(user_did, unseen, db)
+        if not ranked_uris:
             break
 
-        batch = candidates[:settings.feeds_per_slate]
+        batch = [feed_map[uri] for uri in ranked_uris[:settings.feeds_per_slate]]
         batch_uris = [f.feed_uri for f in batch]
         seen_uris.update(batch_uris)
         tried_uris.extend(batch_uris)
