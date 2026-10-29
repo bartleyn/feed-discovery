@@ -12,7 +12,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from store.database import SessionLocal
-from store.models import Feed, ArmState
+from store.models import Feed
 
 # Curated starter feeds — edit freely
 # Format: (feed_uri, display_name, description, topic_tags)
@@ -49,16 +49,10 @@ SEED_FEEDS = [
     ),
 ]
 
-# Your DID for the single-user POC arm bootstrapping
-# Set via env or replace directly
-DEFAULT_USER_DID = os.environ.get("DEFAULT_USER_DID", "")
-
-
 def seed():
     db = SessionLocal()
     try:
         added_feeds = 0
-        added_arms = 0
 
         for (uri, name, desc, tags) in SEED_FEEDS:
             existing = db.get(Feed, uri)
@@ -75,30 +69,6 @@ def seed():
                 print(f"  ~ Feed already exists: {name}")
 
         db.commit()
-
-        # Bootstrap arm state for default user if DID is known
-        if DEFAULT_USER_DID:
-            for (uri, name, _, _) in SEED_FEEDS:
-                existing_arm = (
-                    db.query(ArmState)
-                    .filter_by(user_did=DEFAULT_USER_DID, feed_uri=uri)
-                    .first()
-                )
-                if not existing_arm:
-                    db.add(ArmState(
-                        user_did=DEFAULT_USER_DID,
-                        feed_uri=uri,
-                        alpha=1.0,
-                        beta=1.0,
-                        pulls=0,
-                    ))
-                    added_arms += 1
-
-            db.commit()
-            print(f"\nBootstrapped {added_arms} arm(s) for {DEFAULT_USER_DID}")
-        else:
-            print("\nNo DEFAULT_USER_DID set — skipping arm bootstrap.")
-            print("Arms are created on first /slate request per user.")
 
         print(f"\nDone. Added {added_feeds} feed(s).")
     finally:
