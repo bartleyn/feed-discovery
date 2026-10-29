@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from api.auth import LXM_SEND_INTERACTIONS, bearer_token, verify_service_jwt
 from api.config import settings
-from bandit.thompson import update_arm
+from bandit import linear_ts
 from store import get_db
 from store.models import ChunkPost, Impression, Interaction
 
@@ -167,7 +167,7 @@ def send_interactions(
 
         # requestMore / requestLess: skip the reward window, update the arm now
         if immediate_reward is not None and feed_uri:
-            update_arm(user_did, feed_uri, immediate_reward, db)
+            linear_ts.update(user_did, feed_uri, immediate_reward, db)
             logger.info(
                 "Immediate arm update: feed=%s action=%s reward=%.1f",
                 feed_uri, action, immediate_reward,
