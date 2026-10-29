@@ -10,6 +10,7 @@ from sqlalchemy import (
     Column, String, Integer, Float, DateTime, Text,
     CheckConstraint, ForeignKey, UniqueConstraint, func,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
@@ -49,7 +50,6 @@ class Feed(Base):
     likes_fetched_at = Column(DateTime, nullable=True)
 
     impressions  = relationship("Impression", back_populates="feed")
-    arm_states   = relationship("ArmState", back_populates="feed")
 
 
 class Impression(Base):
@@ -100,25 +100,34 @@ class Interaction(Base):
     impression    = relationship("Impression", back_populates="interactions")
 
 
-class ArmState(Base):
-    """
-    Thompson Sampling state per (user, feed) arm.
+class FeedVector(Base):
+    """Bandit features per feed: PCA'd feed-explorer embedding + z-scored log likes + bias."""
+    __tablename__ = "feed_vectors"
 
-    alpha, beta are Beta distribution parameters.
-    Start at (1, 1) = uniform prior (equal probability of reward).
-    """
-    __tablename__ = "arm_state"
-    __table_args__ = (UniqueConstraint("user_did", "feed_uri"),)
+    feed_uri     = Column(String, ForeignKey("feeds.feed_uri"), primary_key=True)
+    vec          = Column(ARRAY(Float), nullable=False)
+    published_at = Column(DateTime, default=datetime.utcnow)
 
-    id           = Column(Integer, primary_key=True, autoincrement=True)
-    user_did     = Column(String, nullable=False, index=True)
-    feed_uri     = Column(String, ForeignKey("feeds.feed_uri"), nullable=False)
-    alpha        = Column(Float, default=1.0, nullable=False)
-    beta         = Column(Float, default=1.0, nullable=False)
+
+class UserPrior(Base):
+    """Prior mean direction per user: scaled mean of the feed vectors they have liked."""
+    __tablename__ = "user_priors"
+
+    user_did     = Column(String, primary_key=True)
+    vec          = Column(ARRAY(Float), nullable=False)
+    n_likes      = Column(Integer, nullable=False)
+    published_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BanditHead(Base):
+    """Linear-TS sufficient statistics (sum xx^T, sum r*x) per user; user_did '*' is the global head."""
+    __tablename__ = "bandit_heads"
+
+    user_did     = Column(String, primary_key=True)
+    xx           = Column(ARRAY(Float), nullable=False)   # dim*dim, row-major
+    rx           = Column(ARRAY(Float), nullable=False)   # dim
     pulls        = Column(Integer, default=0, nullable=False)
     last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    feed         = relationship("Feed", back_populates="arm_states")
 
 
 class BotConfig(Base):

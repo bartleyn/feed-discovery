@@ -16,7 +16,7 @@ from atproto import Client
 
 from api.config import settings
 from store.database import SessionLocal
-from store.models import ArmState, Feed
+from store.models import Feed
 
 
 def extract_feed_uris(preferences: list[dict]) -> list[str]:
@@ -96,29 +96,6 @@ def import_feeds():
 
         db.commit()
         print(f"\nAdded {added} feed(s), skipped {skipped} already in registry.")
-
-        # Bootstrap arm state for the authenticated user
-        all_feeds = db.query(Feed).all()
-        arms_added = 0
-        for feed in all_feeds:
-            existing_arm = (
-                db.query(ArmState)
-                .filter_by(user_did=user_did, feed_uri=feed.feed_uri)
-                .first()
-            )
-            if not existing_arm:
-                db.add(ArmState(
-                    user_did=user_did,
-                    feed_uri=feed.feed_uri,
-                    alpha=1.0,
-                    beta=1.0,
-                    pulls=0,
-                ))
-                arms_added += 1
-
-        db.commit()
-        if arms_added:
-            print(f"Bootstrapped {arms_added} new arm(s) for {user_did}.")
 
     finally:
         db.close()

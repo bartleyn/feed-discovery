@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session
 
 from api.config import settings
-from bandit.thompson import update_arm
+from bandit import linear_ts
 from store import SessionLocal
 from store.models import Impression, Interaction
 
@@ -80,7 +80,7 @@ def process_due_impressions() -> None:
                 if reward is None:
                     censored += 1
                     continue
-                update_arm(impression.user_did, impression.feed_uri, reward, db)
+                linear_ts.update(impression.user_did, impression.feed_uri, reward, db)
                 rewarded += 1
                 logger.info(
                     "Rewarded impression %d (feed=%s reward=%.1f)",

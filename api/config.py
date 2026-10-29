@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     # How long a quarantined feed sits out before it gets one retry (hours)
     feed_health_retry_hours: float = 24.0
 
+    # Linear-TS bandit (bandit/linear_ts.py); weights come from the offline feed_likes gate
+    bandit_prior_scale: float = 0.05        # reward units per z-unit of offline blend score
+    bandit_pop_weight: float = 2.0          # z(log likes) weight relative to liked-feeds cosine
+    bandit_global_precision: float = 50.0   # pseudo-observations behind the global prior
+    bandit_user_precision: float = 10.0     # pseudo-observations shrinking a user to the global head
+    bandit_noise: float = 0.08              # Thompson sampling scale
+    bandit_explore_slots: int = 1           # uniform-random slots per slate
+    bandit_snapshot_ttl_seconds: int = 600  # feed-vector cache lifetime
+    mmr_lambda: float = 0.7                 # relevance vs diversity in the slate
+
     # Password for the /status admin page (HTTP Basic Auth). Empty = no auth.
     status_password: str = ""
 

@@ -9,6 +9,7 @@ Set STATUS_PASSWORD in .env to require HTTP Basic Auth.
 """
 
 import base64
+import html
 import secrets
 
 from fastapi import APIRouter, Depends, Form, Query, Request
@@ -18,7 +19,8 @@ from sqlalchemy.orm import Session
 
 from api.config import settings
 from store import get_db
-from store.models import ArmState, Feed, Impression
+from bandit import linear_ts
+from store.models import BanditHead, Feed, Impression, UserPrior
 
 router = APIRouter(tags=["status"])
 
@@ -285,39 +287,22 @@ def _user_view(user_did: str, db: Session) -> HTMLResponse:
       <div class="stat"><div class="stat-val">{last_seen.strftime("%m-%d %H:%M") if last_seen else "—"}</div><div class="stat-lbl">last seen</div></div>
     </div>"""
 
-    # Arm rankings for this user
-    arms = (
-        db.query(ArmState, Feed.display_name)
-        .join(Feed, ArmState.feed_uri == Feed.feed_uri)
-        .filter(ArmState.user_did == user_did, ArmState.pulls > 0)
-        .all()
-    )
-    arms_sorted = sorted(arms, key=lambda r: r[0].alpha / (r[0].alpha + r[0].beta), reverse=True)
-    unplayed = (
-        db.query(ArmState)
-        .filter(ArmState.user_did == user_did, ArmState.pulls == 0)
-        .count()
-    )
+    # Posterior-mean ranking for this user (linear-TS head shrunk to the global head)
+    feeds = db.query(Feed).all()
+    names = {f.feed_uri: f.display_name for f in feeds}
+    scored = sorted(linear_ts.mean_scores(user_did, feeds, db).items(), key=lambda kv: -kv[1])
+    head = db.get(BanditHead, user_did)
+    has_prior = db.get(UserPrior, user_did) is not None
 
-    arm_rows = ""
-    for arm, display_name in arms_sorted:
-        mean = arm.alpha / (arm.alpha + arm.beta)
-        bar_width = int(mean * 120)
-        arm_rows += f"""<tr>
-          <td>{display_name}</td>
-          <td>{arm.pulls}</td>
-          <td>
-            <span class="bar-bg"><span class="bar" style="width:{bar_width}px"></span></span>
-            {mean:.3f}
-          </td>
-          <td class="dim">α={arm.alpha:.1f} β={arm.beta:.1f}</td>
-        </tr>"""
-
+    arm_rows = "".join(
+        f"<tr><td>{html.escape(names[uri])}</td><td>{score:+.4f}</td></tr>"
+        for uri, score in scored[:25]
+    )
     arms_section = f"""
-    <h2>Arm Rankings — {len(arms_sorted)} played, {unplayed} unplayed</h2>
+    <h2>Bandit ranking — {head.pulls if head else 0} rewards, liked-feeds prior {"yes" if has_prior else "no"}</h2>
     <table>
-      <tr><th>Feed</th><th>Pulls</th><th>Mean estimate</th><th>Parameters</th></tr>
-      {arm_rows if arm_rows else '<tr><td colspan="4" class="dim">No played arms yet.</td></tr>'}
+      <tr><th>Feed (top 25)</th><th>Posterior mean</th></tr>
+      {arm_rows or '<tr><td colspan="2" class="dim">No feeds.</td></tr>'}
     </table>"""
 
     # Feed performance: per-feed impression stats for this user
