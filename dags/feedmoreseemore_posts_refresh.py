@@ -75,9 +75,7 @@ with DAG(
     "feedmoreseemore_posts_refresh",
     description="Re-sample 25 posts/feed for online feeds and re-derive liveness from them",
     start_date=datetime(2026, 1, 1),
-    schedule="0 4 25 * *",   # 4am on the 25th: ~6.9h measured @ conc 20 for the current
-                              # ~128k online feeds finishes overnight, and lands a week before
-                              # the rebuild DAG's 1st-of-month slot so it always has fresh input.
+    schedule="0 4 25 * *",   # 04:00 UTC on the 25th, est. 9-16h, ahead of the 1st-of-month rebuild
     catchup=False,
     max_active_runs=1,
     default_args=default_args,
@@ -119,19 +117,18 @@ with DAG(
             f.write("\n".join(uris) + "\n")
         print(f"[select_online] {len(uris):,} online/auth feeds -> {URIS_FILE}")
 
-    @task(execution_timeout=timedelta(hours=10))
+    @task(execution_timeout=timedelta(hours=20))
     def fetch_posts():
-        # Measured 2026-08-25: 5.19 feeds/s @ concurrency 20 (2.0% error rate) against a
-        # 300-feed sample -> ~6.9h for the current ~128,558 online feeds. --refresh makes
-        # this a true re-sample every cycle (see module docstring) rather than a one-time
-        # fetch that silently no-ops on every later run.
+        # Low concurrency: under load Skyfeed misses the AppView's ~5s timeout (502s).
+        # --refresh makes this a true re-sample every cycle (see module docstring) rather
+        # than a one-time fetch that silently no-ops on every later run.
         # --auth: unauthenticated getFeed returns 0 posts for personalized feeds, which
         # both classify_liveness (below) and a full layout rebuild's PG-driven LIVE filter
         # then can't tell apart from a genuinely dead feed. A real viewer context resolves
         # that ambiguity for the ~17k feeds currently sitting in that empty-probe bucket.
         # Needs ATPROTO_HANDLE/ATPROTO_PASSWORD in feed-discovery/.env.
         py("scripts.fetch_feed_posts",
-           "--uris-file", URIS_FILE, "--refresh", "--posts", "25", "--concurrency", "20", "--auth")
+           "--uris-file", URIS_FILE, "--refresh", "--posts", "25", "--concurrency", "3", "--auth")
 
     @task()
     def sync_health():
